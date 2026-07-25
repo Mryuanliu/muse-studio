@@ -7,7 +7,7 @@ import { useChatSSE, ChatMessage } from '../../hooks/useChatSSE';
 import ChatMessageComponent from '../../components/ChatMessage';
 import PreviewPanel from '../../components/PreviewPanel';
 
-function TaskChat({ convId, initialMsgs, sdkSessionId }: { convId?: string; initialMsgs?: ChatMessage[]; sdkSessionId?: string }) {
+function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles }: { convId?: string; initialMsgs?: ChatMessage[]; sdkSessionId?: string; initialOutputFiles?: string[] }) {
   const { messages, isStreaming, sendMessage } = useChatSSE({
     initialMessages: initialMsgs,
     initialConversationId: convId,
@@ -22,14 +22,22 @@ function TaskChat({ convId, initialMsgs, sdkSessionId }: { convId?: string; init
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Extract HTML for preview — use generated output files first, fallback to regex
+  // Extract HTML for preview — use output files / tool update events / regex
   useEffect(() => {
-    // First check if there are events with Write tool file_path
-    const last = [...messages].reverse().find((m) => m.role === 'assistant');
-    if (last?.events) {
-      // Look for tool_start events with html file paths
-      for (const ev of [...last.events].reverse()) {
-        const fp = ev.type === 'tool_start' && (ev.toolInput?.file_path || ev.toolInput?.path);
+    // 1. Check initialOutputFiles (from persisted conversation)
+    const of = initialOutputFiles;
+    if (of && of.length > 0) {
+      const filename = of[0].split('/').pop() || of[0];
+      setPreviewHtml(`http://localhost:3001/output/${filename}`);
+      return;
+    }
+    // 2. Check all assistant messages' events for Write tool file paths
+    for (const m of [...messages].reverse()) {
+      if (m.role !== 'assistant' || !m.events) continue;
+      for (const ev of [...m.events].reverse()) {
+        // Check both tool_start (streaming) and tool_update (persisted) for file_path
+        const input = ev.type === 'tool_update' ? ev.toolInput : ev.toolInput;
+        const fp = input?.file_path || input?.path;
         if (fp && typeof fp === 'string' && /\.html?$/i.test(fp)) {
           const filename = fp.split('/').pop() || fp;
           setPreviewHtml(`http://localhost:3001/output/${filename}`);
@@ -37,13 +45,13 @@ function TaskChat({ convId, initialMsgs, sdkSessionId }: { convId?: string; init
         }
       }
     }
-    // Fallback: regex extraction from text content
+    // 3. Fallback: regex extraction from text content
     const textMsg = [...messages].reverse().find((m) => m.role === 'assistant' && m.content);
     if (textMsg) {
       const m = textMsg.content.match(/(?:<html[\s\S]*?<\/html>|<!(?:DOCTYPE|doctype)\s+html[\s\S]*?<\/html>)/i);
       if (m) setPreviewHtml(m[0]);
     }
-  }, [messages]);
+  }, [messages, initialOutputFiles]);
 
   const handleSubmit = () => {
     const text = input.trim();
@@ -128,6 +136,7 @@ export default function TaskPage() {
     msgs: ChatMessage[];
     convId: string;
     sdkSessionId?: string;
+    outputFiles?: string[];
   } | undefined>();
 
   useEffect(() => {
@@ -145,7 +154,12 @@ export default function TaskPage() {
           thinkingChain: m.thinkingChain || undefined,
           events: m.events ? (typeof m.events === 'string' ? JSON.parse(m.events) : m.events) : undefined,
         }));
-        setInitialData({ msgs, convId: data.id, sdkSessionId: data.sdkSessionId || undefined });
+        // Parse output files from conversation
+        let outputFiles: string[] | undefined;
+        if (data.outputFiles) {
+          try { outputFiles = JSON.parse(data.outputFiles); } catch { outputFiles = [data.outputFiles]; }
+        }
+        setInitialData({ msgs, convId: data.id, sdkSessionId: data.sdkSessionId || undefined, outputFiles });
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -164,6 +178,7 @@ export default function TaskPage() {
       convId={isNew ? undefined : (initialData?.convId || convId)}
       initialMsgs={isNew ? undefined : initialData?.msgs}
       sdkSessionId={isNew ? undefined : initialData?.sdkSessionId}
+      initialOutputFiles={isNew ? undefined : initialData?.outputFiles}
     />
   );
 }
