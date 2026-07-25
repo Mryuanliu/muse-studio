@@ -22,11 +22,14 @@ function TaskChat({ convId, initialMsgs, sdkSessionId }: { convId?: string; init
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Extract HTML for preview
+  // Extract HTML for preview — match full html docs or doctype+html
   useEffect(() => {
     const last = [...messages].reverse().find((m) => m.role === 'assistant' && m.content);
     if (last) {
-      const m = last.content.match(/<html[\s\S]*?<\/html>/i);
+      const content = last.content;
+      // Try full <html>...</html> first, then <!DOCTYPE html>...</html>, then standalone <!DOCTYPE
+      const m = content.match(/(?:<html[\s\S]*?<\/html>|<!(?:DOCTYPE|doctype)\s+html[\s\S]*?<\/html>)/i)
+             || content.match(/<(?:html|!DOCTYPE|!doctype)[\s\S]*?(?:<\/html>|$)/i);
       if (m) setPreviewHtml(m[0]);
     }
   }, [messages]);
@@ -40,8 +43,8 @@ function TaskChat({ convId, initialMsgs, sdkSessionId }: { convId?: string; init
 
   return (
     <div className="flex h-screen">
-      {/* Left: Chat */}
-      <div className="w-1/2 min-w-0 border-r border-white/10 flex flex-col">
+      {/* Left: Chat (narrower) */}
+      <div className="w-[35%] min-w-[320px] border-r border-white/10 flex flex-col">
         {/* Header */}
         <div className="flex-shrink-0 px-4 py-3 border-b border-white/10 flex items-center justify-between">
           <Link href="/" className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
@@ -97,8 +100,8 @@ function TaskChat({ convId, initialMsgs, sdkSessionId }: { convId?: string; init
         </div>
       </div>
 
-      {/* Right: Preview */}
-      <div className="w-1/2 min-w-0">
+      {/* Right: Preview (wider) */}
+      <div className="flex-1 min-w-0">
         <PreviewPanel html={previewHtml} />
       </div>
     </div>
