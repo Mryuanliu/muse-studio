@@ -3,22 +3,34 @@
 import React from 'react';
 
 interface Props {
+  /** Inline HTML string, or a URL to load in the iframe */
   html?: string;
 }
 
 export default function PreviewPanel({ html }: Props) {
   const iframeRef = React.useRef<HTMLIFrameElement>(null);
+  const [src, setSrc] = React.useState<string | undefined>();
 
-  // Update iframe content when HTML changes
+  // Determine if html is a URL or inline content
+  const isUrl = html?.startsWith('http');
+
   React.useEffect(() => {
-    if (!html || !iframeRef.current) return;
-    const iframe = iframeRef.current;
-    const doc = iframe.contentDocument || iframe.contentWindow?.document;
-    if (!doc) return;
-    doc.open();
-    doc.write(html);
-    doc.close();
-  }, [html]);
+    if (!html) {
+      setSrc(undefined);
+      return;
+    }
+
+    if (isUrl) {
+      // Load from URL
+      setSrc(html);
+    } else {
+      // Write inline HTML to iframe via blob URL
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      setSrc(url);
+      return () => URL.revokeObjectURL(url);
+    }
+  }, [html, isUrl]);
 
   if (!html) {
     return (
@@ -40,23 +52,14 @@ export default function PreviewPanel({ html }: Props) {
       <div className="flex-shrink-0 px-4 py-2 border-b border-white/10 flex items-center justify-between">
         <span className="text-xs text-gray-500">H5 预览</span>
         <div className="flex gap-2">
-          <button
-            onClick={() => {
-              if (iframeRef.current) {
-                const doc =
-                  iframeRef.current.contentDocument ||
-                  iframeRef.current.contentWindow?.document;
-                if (doc) {
-                  doc.open();
-                  doc.write(html);
-                  doc.close();
-                }
-              }
-            }}
-            className="text-xs px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-400 transition-colors"
-          >
-            刷新
-          </button>
+          {isUrl && (
+            <button
+              onClick={() => iframeRef.current?.contentWindow?.location.reload()}
+              className="text-xs px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-400 transition-colors"
+            >
+              刷新
+            </button>
+          )}
         </div>
       </div>
 
@@ -64,6 +67,7 @@ export default function PreviewPanel({ html }: Props) {
       <div className="flex-1 bg-white">
         <iframe
           ref={iframeRef}
+          src={src}
           className="w-full h-full border-none"
           title="H5 Preview"
           sandbox="allow-scripts"

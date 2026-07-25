@@ -24,6 +24,10 @@ export class Conversation {
   @Column({ default: 'active' })
   status: string;
 
+  /** Generated output file paths (JSON array of strings) */
+  @Column({ type: 'text', nullable: true })
+  outputFiles: string;
+
   @CreateDateColumn()
   createdAt: Date;
 

@@ -22,14 +22,25 @@ function TaskChat({ convId, initialMsgs, sdkSessionId }: { convId?: string; init
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Extract HTML for preview — match full html docs or doctype+html
+  // Extract HTML for preview — use generated output files first, fallback to regex
   useEffect(() => {
-    const last = [...messages].reverse().find((m) => m.role === 'assistant' && m.content);
-    if (last) {
-      const content = last.content;
-      // Try full <html>...</html> first, then <!DOCTYPE html>...</html>, then standalone <!DOCTYPE
-      const m = content.match(/(?:<html[\s\S]*?<\/html>|<!(?:DOCTYPE|doctype)\s+html[\s\S]*?<\/html>)/i)
-             || content.match(/<(?:html|!DOCTYPE|!doctype)[\s\S]*?(?:<\/html>|$)/i);
+    // First check if there are events with Write tool file_path
+    const last = [...messages].reverse().find((m) => m.role === 'assistant');
+    if (last?.events) {
+      // Look for tool_start events with html file paths
+      for (const ev of [...last.events].reverse()) {
+        const fp = ev.type === 'tool_start' && (ev.toolInput?.file_path || ev.toolInput?.path);
+        if (fp && typeof fp === 'string' && /\.html?$/i.test(fp)) {
+          const filename = fp.split('/').pop() || fp;
+          setPreviewHtml(`http://localhost:3001/output/${filename}`);
+          return;
+        }
+      }
+    }
+    // Fallback: regex extraction from text content
+    const textMsg = [...messages].reverse().find((m) => m.role === 'assistant' && m.content);
+    if (textMsg) {
+      const m = textMsg.content.match(/(?:<html[\s\S]*?<\/html>|<!(?:DOCTYPE|doctype)\s+html[\s\S]*?<\/html>)/i);
       if (m) setPreviewHtml(m[0]);
     }
   }, [messages]);

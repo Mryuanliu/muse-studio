@@ -107,6 +107,15 @@ export class AgentSdkController {
             break;
           case 'done':
             await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking, events);
+            // Save generated HTML file paths from tool calls to conversation record
+            if (convId) {
+              for (const ev of events) {
+                const fp = ev.type === 'tool_start' && (ev.toolInput?.file_path || ev.toolInput?.path);
+                if (fp && typeof fp === 'string' && /\.html?$/i.test(fp)) {
+                  await this.conversation.addOutputFile(convId, fp);
+                }
+              }
+            }
             sendSSE('done', { messageId: assistantMsg.id, usage: chunk.usage });
             break;
         }

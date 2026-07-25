@@ -105,6 +105,17 @@ export class ConversationService {
     await this.convRepo.update(conversationId, { sdkSessionId });
   }
 
+  /** Append an output file path to the conversation. */
+  async addOutputFile(conversationId: string, filePath: string): Promise<void> {
+    const conv = await this.convRepo.findOne({ where: { id: conversationId } });
+    if (!conv) return;
+    const files: string[] = conv.outputFiles ? JSON.parse(conv.outputFiles) : [];
+    if (!files.includes(filePath)) {
+      files.push(filePath);
+      await this.convRepo.update(conversationId, { outputFiles: JSON.stringify(files) });
+    }
+  }
+
   // ── Admin queries ──
 
   /** List all conversations for admin, with message count. */
