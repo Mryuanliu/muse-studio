@@ -51,7 +51,9 @@ export class AgentSdkService {
         },
         cwd: this.outputDir,
         tools: { type: 'preset', preset: 'claude_code' },
-        maxTurns: 20,
+        // Max API round-trips (model → tool_use → tool_result → model...).
+        // Each Write/Bash/Read call counts as one turn. Override via MAX_TURNS env.
+        maxTurns: parseInt(process.env.MAX_TURNS || '100', 10),
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
         ...(resume ? { resume } : {}),
