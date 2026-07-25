@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /* ── Anthropic request type definitions ── */
 interface AnthropicBlock {
@@ -48,13 +50,108 @@ interface AnthropicRequest {
 export class ProxyService {
   private readonly logger = new Logger(ProxyService.name);
   private defaultModel: string;
+  private logDir: string;
 
   constructor() {
     this.defaultModel = process.env.DEEPSEEK_MODEL || 'deepseek-reasoner';
+    this.logDir = path.resolve(process.env.PROXY_LOG_DIR || './proxy-logs');
+    fs.mkdirSync(this.logDir, { recursive: true });
     this.logger.log(`Proxy active — mapping Anthropic API → ${this.defaultModel}`);
+    this.logger.log(`Proxy logs → ${this.logDir}`);
     if (!process.env.DEEPSEEK_API_KEY) {
       this.logger.warn('DEEPSEEK_API_KEY is not set! Run: export DEEPSEEK_API_KEY=sk-...');
     }
+  }
+
+  /**
+   * Log Anthropic → OpenAI request conversion for debugging.
+   * Writes a formatted markdown file per request.
+   */
+  private logConversion(
+    req: AnthropicRequest,
+    openAiMessages: any[],
+    openAiBody: Record<string, unknown>,
+    direction: 'stream' | 'non-stream',
+  ) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filePath = path.join(this.logDir, `proxy-${timestamp}.md`);
+
+    const anthropicBody: Record<string, any> = {
+      model: req.model,
+      max_tokens: req.max_tokens,
+      stream: direction === 'stream',
+      messages: req.messages,
+    };
+    if (req.system) anthropicBody.system = req.system;
+    if (req.tools?.length) {
+      anthropicBody.tools = req.tools.map((t: any) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.input_schema,
+      }));
+    }
+    if (req.thinking) anthropicBody.thinking = req.thinking;
+
+    const lines: string[] = [];
+    lines.push(`# Proxy Conversion Log`);
+    lines.push(`Timestamp: ${new Date().toISOString()}`);
+    lines.push(`Direction: ${direction}`);
+    lines.push('');
+    lines.push('## Anthropic Request (received from SDK)');
+    lines.push('```json');
+    lines.push(JSON.stringify(anthropicBody, null, 2));
+    lines.push('```');
+    lines.push('');
+    lines.push('## OpenAI / DeepSeek Request (sent to API)');
+    lines.push('```json');
+    // Show key fields: model, messages, tools, extra_body, stream
+    const oaiSummary: Record<string, any> = {
+      model: openAiBody.model,
+      max_tokens: openAiBody.max_tokens,
+      stream: openAiBody.stream,
+      messages: openAiMessages,
+    };
+    if (openAiBody.tools) oaiSummary.tools = openAiBody.tools;
+    if (openAiBody.tool_choice) oaiSummary.tool_choice = openAiBody.tool_choice;
+    if ((openAiBody as any).extra_body) oaiSummary.extra_body = (openAiBody as any).extra_body;
+    lines.push(JSON.stringify(oaiSummary, null, 2));
+    lines.push('```');
+    lines.push('');
+
+    // Message count comparison
+    lines.push('## Message Count Comparison');
+    lines.push('');
+    lines.push('| | Anthropic | OpenAI |');
+    lines.push('|---|---|---|');
+    const anthMsgCount = req.messages?.length || 0;
+    const oaiMsgCount = openAiMessages?.length || 0;
+    lines.push(`| Messages | ${anthMsgCount} | ${oaiMsgCount} |`);
+    const anthToolCount = req.tools?.length || 0;
+    const oaiToolCount = (openAiBody.tools as any[])?.length || 0;
+    lines.push(`| Tool definitions | ${anthToolCount} | ${oaiToolCount} |`);
+    lines.push('');
+
+    // Per-message comparison
+    lines.push('## Per-Message Comparison');
+    lines.push('');
+    const anthMsgs = req.messages || [];
+    for (let i = 0; i < Math.max(anthMsgs.length, openAiMessages.length); i++) {
+      lines.push(`### Message ${i}`);
+      lines.push('');
+      lines.push('**Anthropic:**');
+      lines.push('```json');
+      lines.push(JSON.stringify(anthMsgs[i] || '(missing)', null, 2));
+      lines.push('```');
+      lines.push('');
+      lines.push('**OpenAI:**');
+      lines.push('```json');
+      lines.push(JSON.stringify(openAiMessages[i] || '(missing)', null, 2));
+      lines.push('```');
+      lines.push('');
+    }
+
+    fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+    this.logger.debug(`Conversion log written: ${filePath}`);
   }
 
   // ──────────────────────────────────────────────
@@ -109,6 +206,9 @@ export class ProxyService {
       if (req.tool_choice) {
         body.tool_choice = this.mapToolChoice(req.tool_choice);
       }
+
+      // Log the format conversion
+      this.logConversion(req, dsMessages, body, 'stream');
 
       // Use raw fetch to sidestep OpenAI SDK typing issues with extra_body
       const raw = await fetch('https://api.deepseek.com/v1/chat/completions', {
@@ -333,6 +433,8 @@ export class ProxyService {
       }));
     }
     if (req.tool_choice) body.tool_choice = this.mapToolChoice(req.tool_choice);
+
+    this.logConversion(req, dsMessages, body, 'non-stream');
 
     try {
       const raw = await fetch('https://api.deepseek.com/v1/chat/completions', {
