@@ -207,8 +207,8 @@ export class ProxyService {
         body.tool_choice = this.mapToolChoice(req.tool_choice);
       }
 
-      // Log the format conversion
-      this.logConversion(req, dsMessages, body, 'stream');
+      // Log the format conversion (non-critical, wrap in try-catch)
+      try { this.logConversion(req, dsMessages, body, 'stream'); } catch (e: any) { this.logger.warn(`logConversion failed: ${e.message}`); }
 
       // Use raw fetch to sidestep OpenAI SDK typing issues with extra_body
       const raw = await fetch('https://api.deepseek.com/v1/chat/completions', {
@@ -434,7 +434,7 @@ export class ProxyService {
     }
     if (req.tool_choice) body.tool_choice = this.mapToolChoice(req.tool_choice);
 
-    this.logConversion(req, dsMessages, body, 'non-stream');
+    try { this.logConversion(req, dsMessages, body, 'non-stream'); } catch (e: any) { this.logger.warn(`logConversion failed: ${e.message}`); }
 
     try {
       const raw = await fetch('https://api.deepseek.com/v1/chat/completions', {
