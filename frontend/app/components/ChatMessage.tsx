@@ -64,6 +64,9 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
 
   switch (ev.type) {
     case 'thinking':
+      // During streaming (isStreaming), thinking is rendered as typewriter block below
+      if (isStreaming) return null;
+      // History: show as inline line
       return (
         <div className="flex gap-2 text-xs text-purple-300/60 py-0.5 pl-2">
           <span className="flex-shrink-0 mt-0.5">🧠</span>
