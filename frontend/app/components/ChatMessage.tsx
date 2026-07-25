@@ -11,17 +11,21 @@ interface Props {
 }
 
 /* ── Icons ── */
-function EventIcon({ type }: { type: string }) {
-  switch (type) {
-    case 'tool_start':
-      return <svg className="w-3.5 h-3.5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>;
-    case 'status':
-      return <svg className="w-3.5 h-3.5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>;
-    case 'command_output':
-      return <svg className="w-3.5 h-3.5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8 9l3 3-3 3m5 0h3M5 20h14a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v14a1 1 0 001 1z" /></svg>;
-    default:
-      return null;
-  }
+function toolEmoji(name: string): string {
+  if (/bash|sh|shell|command|exec/i.test(name)) return '💻';
+  if (/write|Write/i.test(name)) return '📄';
+  if (/read|Read|grep|Glob/i.test(name)) return '📖';
+  if (/task|Task/i.test(name)) return '📋';
+  if (/search|web/i.test(name)) return '🔍';
+  if (/fetch|curl/i.test(name)) return '🌐';
+  if (/ask|question/i.test(name)) return '💬';
+  if (/edit|Edit/i.test(name)) return '✏️';
+  return '🔧';
+}
+
+function toolName(name: string): string {
+  // Add spaces before uppercase letters for CamelCase names
+  return name.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z])([A-Z][a-z])/g, '$1 $2');
 }
 
 /* ── Format tool input for display ── */
@@ -37,86 +41,119 @@ function formatToolInput(toolName: string, input: any): string {
     case 'Read':
     case 'read':
       return input.file_path || input.path || '';
+    case 'Edit':
+    case 'edit':
+      return input.file_path || input.pattern || '';
     case 'TaskCreate':
-      return input.title || input.description || JSON.stringify(input).slice(0, 120);
-    case 'TaskUpdate':
-      return JSON.stringify(input).slice(0, 120);
+      return input.title || input.description || '';
     case 'WebSearch':
       return input.query || '';
     case 'WebFetch':
       return input.url || '';
     default:
       const simple = JSON.stringify(input);
-      return simple.length > 100 ? simple.slice(0, 100) + '…' : simple;
+      return simple.length > 200 ? simple.slice(0, 200) + '…' : simple;
   }
-}
-
-/* ── Tool emoji ── */
-function toolEmoji(name: string): string {
-  if (/bash|sh|shell|command|exec/i.test(name)) return '💻';
-  if (/write|Write/i.test(name)) return '📄';
-  if (/read|Read|grep|Glob/i.test(name)) return '📖';
-  if (/task|Task/i.test(name)) return '📋';
-  if (/search|web/i.test(name)) return '🔍';
-  if (/fetch|curl/i.test(name)) return '🌐';
-  if (/ask|question/i.test(name)) return '💬';
-  return '🔧';
 }
 
 /* ── Single event item ── */
 function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const inputStr = ev.toolInput ? JSON.stringify(ev.toolInput, null, 2) : '';
+  const isLong = inputStr.length > 120;
+
   switch (ev.type) {
+    case 'thinking':
+      return (
+        <div className="flex gap-2 text-xs text-purple-300/60 py-0.5 pl-2">
+          <span className="flex-shrink-0 mt-0.5">🧠</span>
+          <span className="italic leading-relaxed whitespace-pre-wrap break-words">{ev.content}</span>
+        </div>
+      );
+
     case 'tool_start':
       return (
-        <div className="flex items-start gap-2 text-xs py-1 px-2.5 rounded-lg bg-amber-500/[0.06] border border-amber-500/[0.12]">
-          <span className="flex-shrink-0 mt-0.5">
-            <EventIcon type="tool_start" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <span className="font-semibold text-amber-300">{toolEmoji(ev.toolName)} {ev.toolName}</span>
-            {ev.toolInput && (
-              <div className="font-mono text-gray-400 mt-0.5 truncate hover:text-gray-300 transition-colors" title={JSON.stringify(ev.toolInput, null, 2)}>
-                {formatToolInput(ev.toolName || '', ev.toolInput)}
-              </div>
-            )}
+        <div className="flex flex-col gap-1 py-1 px-2.5 rounded-lg bg-amber-500/[0.06] border border-amber-500/[0.12]">
+          <div className="flex items-start gap-2 text-xs">
+            <span className="flex-shrink-0 mt-0.5">{toolEmoji(ev.toolName || '')}</span>
+            <div className="min-w-0 flex-1">
+              <span className="font-semibold text-amber-300">{toolName(ev.toolName || '')}</span>
+              {ev.toolInput && (
+                <div className="font-mono text-gray-400 mt-0.5 truncate" title={inputStr}>
+                  {formatToolInput(ev.toolName || '', ev.toolInput)}
+                </div>
+              )}
+            </div>
           </div>
+          {/* Expandable full input */}
+          {isLong && (
+            <div className="pl-5">
+              <button
+                onClick={() => setExpanded(!expanded)}
+                className="text-[10px] text-amber-500/60 hover:text-amber-400 transition-colors"
+              >
+                {expanded ? '收起' : '展开完整输入'}
+              </button>
+              {expanded && (
+                <pre className="mt-1 text-xs text-gray-300 bg-black/30 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">
+                  {inputStr}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      );
+
+    case 'tool_update':
+      return (
+        <div className="pl-2 ml-4 border-l-2 border-amber-500/20 py-1">
+          <div className="text-[10px] text-amber-400/50 mb-0.5">工具结果</div>
+          <pre className="text-xs text-cyan-300/80 whitespace-pre-wrap break-words bg-black/20 rounded p-2 max-h-48 overflow-y-auto">
+            {ev.toolInput ? JSON.stringify(ev.toolInput, null, 2).slice(0, 2000) : ev.content || ''}
+            {(ev.toolInput && JSON.stringify(ev.toolInput).length > 2000) ? '\n…(内容过长)' : ''}
+          </pre>
         </div>
       );
 
     case 'tool_progress':
       return (
-        <div className="flex gap-2 text-xs text-gray-500 py-0.5 pl-2.5">
-          <span className="flex-shrink-0"><EventIcon type="tool_start" /></span>
+        <div className="flex gap-2 text-xs text-gray-500 py-0.5 pl-2">
+          <span>{toolEmoji(ev.toolName || '')}</span>
           <span className="italic">{ev.toolName} {ev.subtype === 'running' ? '…' : ev.subtype}</span>
         </div>
       );
 
     case 'status':
       return (
-        <div className="flex gap-2 text-xs text-green-300/70 py-0.5 pl-2.5">
-          <span className="flex-shrink-0 mt-0.5"><EventIcon type="status" /></span>
+        <div className="flex gap-2 text-xs text-green-300/70 py-0.5 pl-2">
+          <span>✅</span>
           <span>{ev.content}</span>
         </div>
       );
 
-    case 'command_output':
+    case 'command_output': {
+      const isLongOutput = (ev.content?.length || 0) > 200;
+      const display = expanded ? ev.content : ev.content?.slice(0, 200);
       return (
-        <div className="flex gap-2 text-xs py-1 pl-2.5">
-          <span className="flex-shrink-0 mt-1"><EventIcon type="command_output" /></span>
-          <pre className="flex-1 bg-black/30 rounded-lg p-2.5 text-cyan-300/80 overflow-x-auto max-h-36 leading-relaxed border border-white/5">
-            {ev.content}
+        <div className="flex flex-col gap-1 text-xs py-1 pl-2">
+          {isLongOutput && (
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="text-[10px] text-cyan-500/60 hover:text-cyan-400 self-start transition-colors"
+            >
+              {expanded ? '收起输出' : `展开完整输出 (${ev.content?.length} 字符)`}
+            </button>
+          )}
+          <pre className="bg-black/30 rounded-lg p-2.5 text-cyan-300/80 overflow-x-auto max-h-64 leading-relaxed border border-white/5">
+            {display}
+            {isLongOutput && !expanded && '…'}
           </pre>
         </div>
       );
-
-    case 'thinking':
-      return null; // Rendered as typewriter block via thinkingChain below
-
-    case 'tool_update':
-      return null; // Handled by updating tool_start's toolInput
+    }
 
     case 'text_chunk':
-      return null; // Shown as final markdown content
+      return null;
 
     default:
       return null;
@@ -128,17 +165,15 @@ export default function ChatMessage({ message, isLast }: Props) {
   const [typewriterChars, setTypewriterChars] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isUser = message.role === 'user';
-  const hasThinking = !!message.thinkingChain && message.thinkingChain.length > 0;
   const hasEvents = !!message.events && message.events.length > 0;
 
-  // Typewriter effect for thinkingChain: reveal chars one by one
+  // Typewriter only for real-time streaming, not historical messages
   const thinkingLen = message.thinkingChain?.length || 0;
   useEffect(() => {
-    if (!isLast || !hasThinking) {
+    if (!isLast || !thinkingLen) {
       setTypewriterChars(thinkingLen);
       return;
     }
-    // When new text arrives, gradually increase displayed chars
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
       setTypewriterChars((prev) => {
@@ -148,13 +183,12 @@ export default function ChatMessage({ message, isLast }: Props) {
         }
         return prev + 1;
       });
-    }, 15); // ~15ms per char ≈ 66 chars/sec
+    }, 15);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [thinkingLen, isLast, hasThinking]);
+  }, [thinkingLen, isLast]);
 
-  // Count tool types for badges
-  const toolCalls = (message.events || []).filter((e) => e.type === 'tool_start');
-  // Unique tools
+  // Tool counts for badges
+  const toolCalls = (message.events || []).filter((e) => e.type === 'tool_start' || e.type === 'tool_update');
   const uniqueTools = [...new Set(toolCalls.map((t) => t.toolName).filter(Boolean))];
 
   return (
@@ -166,7 +200,7 @@ export default function ChatMessage({ message, isLast }: Props) {
             : 'bg-white/[0.03] border border-white/[0.08] text-gray-200'
         }`}
       >
-        {/* ── Event log (skip thinking/text_chunk, rendered separately below) ── */}
+        {/* ── Chronological event log (thinking, tool, status, etc. in order) ── */}
         {!isUser && hasEvents && (
           <div className="space-y-1 mb-3">
             {message.events!.map((ev, i) => (
@@ -175,27 +209,17 @@ export default function ChatMessage({ message, isLast }: Props) {
           </div>
         )}
 
-        {/* ── Thinking typewriter block ── */}
-        {!isUser && hasThinking && (
+        {/* ── Typewriter thinking block (only for NEW streaming content) ── */}
+        {!isUser && isLast && thinkingLen > 0 && (
           <div className="mb-3">
-            <button
-              onClick={() => setShowFullThinking((s) => !s)}
-              className="flex items-center gap-1.5 text-[11px] text-purple-400/70 hover:text-purple-300 transition-colors mb-1"
-            >
-              <svg className={`w-3 h-3 transition-transform ${showFullThinking ? 'rotate-90' : ''}`} fill="currentColor" viewBox="0 0 20 20">
-                <path d="M6 4l8 6-8 6V4z" />
-              </svg>
+            <div className="flex items-center gap-1.5 text-[11px] text-purple-400/70 mb-1">
               <span>🧠 思考过程</span>
-              {isLast && <span className="inline-block w-1.5 h-3.5 bg-purple-400/60 ml-0.5 animate-pulse" />}
-            </button>
+              {typewriterChars < thinkingLen && (
+                <span className="inline-block w-1.5 h-3.5 bg-purple-400/60 animate-pulse" />
+              )}
+            </div>
             <div className="text-xs text-purple-300/70 leading-relaxed pl-4 border-l-2 border-purple-500/20 font-light whitespace-pre-wrap">
-              {showFullThinking
-                ? message.thinkingChain
-                : isLast
-                  ? message.thinkingChain.slice(0, typewriterChars)
-                  : message.thinkingChain.length > 200
-                    ? message.thinkingChain.slice(-200) + '…'
-                    : message.thinkingChain}
+              {message.thinkingChain?.slice(0, typewriterChars) || ''}
             </div>
           </div>
         )}
@@ -205,13 +229,11 @@ export default function ChatMessage({ message, isLast }: Props) {
           <div className="mb-2 flex flex-wrap gap-1.5">
             {uniqueTools.map((name, i) => (
               <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400/80 font-mono">
-                {toolEmoji(name!)} {name}
+                {toolEmoji(name!)} {toolName(name!)}
               </span>
             ))}
             {toolCalls.length > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/10 text-gray-500">
-                ×{toolCalls.length}
-              </span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/10 text-gray-500">×{toolCalls.length}</span>
             )}
           </div>
         )}
