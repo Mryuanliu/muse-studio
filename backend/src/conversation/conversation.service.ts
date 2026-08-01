@@ -105,6 +105,11 @@ export class ConversationService {
     await this.convRepo.update(conversationId, { sdkSessionId });
   }
 
+  /** Save the sandbox output directory so resume uses the same workspace. */
+  async updateOutputDir(conversationId: string, outputDir: string): Promise<void> {
+    await this.convRepo.update(conversationId, { outputDir });
+  }
+
   /** Save the current agent run status. */
   async updateRunStatus(conversationId: string, runStatus: string): Promise<void> {
     await this.convRepo.update(conversationId, { runStatus, updatedAt: new Date() });

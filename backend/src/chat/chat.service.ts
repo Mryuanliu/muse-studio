@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Response } from 'express';
 import { DeepseekService, ChatMessage } from './deepseek.service';
 import { ConversationService } from '../conversation/conversation.service';
-import { GAME_SYSTEM_PROMPT } from '../agent-sdk/game-system-prompt';
+import { PAGE_SYSTEM_PROMPT } from './page-system-prompt';
 
 @Injectable()
 export class ChatService {
@@ -38,7 +38,7 @@ export class ChatService {
     const messages = await this.conversation.getMessages(convId);
     const dsMessages: ChatMessage[] = [];
 
-    const effectiveSystem = system || GAME_SYSTEM_PROMPT;
+    const effectiveSystem = system || PAGE_SYSTEM_PROMPT;
     if (effectiveSystem) {
       dsMessages.push({ role: 'system', content: effectiveSystem });
     }

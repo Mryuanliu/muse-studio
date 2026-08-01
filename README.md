@@ -8,8 +8,11 @@
 h5-platform/
 ├── backend/                          # Nest.js
 │   ├── src/
-│   │   ├── main.ts                   # 启动入口，CORS
+│   │   ├── main.ts                   # 启动入口，CORS + Socket.IO 预览推送
 │   │   ├── app.module.ts             # 根模块
+│   │   ├── platform/                 # Skill/MCP 配置管理
+│   │   ├── realtime/                 # Socket.IO 实时通道
+│   │   ├── preview/                  # 预览代理
 │   │   ├── proxy/
 │   │   │   ├── proxy.controller.ts   # POST /v1/messages (Anthropic 兼容接口)
 │   │   │   └── proxy.service.ts      # Anthropic ↔ OpenAI/DeepSeek 格式转换
@@ -20,9 +23,9 @@ h5-platform/
 │   │   ├── agent-sdk/
 │   │   │   ├── agent-run.service.ts     # 运行协调：续跑/重连/全量 snapshot
 │   │   │   ├── agent-sdk.controller.ts  # POST /agent/run, GET /agent/status
-│   │   │   ├── agent-sdk.module.ts
-│   │   │   ├── agent-sdk.service.ts     # 封装 @anthropic-ai/claude-agent-sdk query()
-│   │   │   └── game-system-prompt.ts    # 网页小游戏专精系统提示词
+│   │   │   └── agent-sdk.module.ts
+│   │   ├── sandbox/
+│   │   │   └── sandbox-service-client.ts # 主服务 → sandbox 服务 HTTP/SSE 客户端
 │   │   ├── conversation/
 │   │   │   ├── conversation.service.ts
 │   │   │   └── entities/
@@ -33,15 +36,30 @@ h5-platform/
 │   │       └── database.module.ts    # TypeORM + SQLite
 │   ├── .env                          # DeepSeek API Key
 │   └── data/h5-platform.db           # SQLite 数据库
+├── sandbox/                          # 独立 Agent 沙箱服务
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── src/
+│   │   ├── service.ts                # HTTP 控制面 + SSE 事件流
+│   │   ├── agent-sdk.service.ts      # 封装 @anthropic-ai/claude-agent-sdk query()
+│   │   ├── page-system-prompt.ts     # 展示页/后台页通用系统提示词
+│   │   └── types.ts
+│   └── mcp/                          # workspace / preview MCP server
+├── skills/                           # 生成技能源
+│   ├── tailwind-showcase-page/
+│   └── tailwind-admin-page/
 ├── frontend/                         # Next.js
 │   └── app/
-│       ├── page.tsx                  # 左右分栏布局
+│       ├── page.tsx                  # 首页重定向到 /tasks
+│       ├── tasks/                    # 任务列表
+│       ├── skills/                   # Skill 管理
+│       ├── mcps/                     # MCP 管理
 │       ├── components/
-│       │   ├── ChatPanel.tsx         # 左侧：对话区
-│       │   ├── ChatMessage.tsx       # 消息组件 (Markdown + 思考/工具事件流)
-│       │   └── PreviewPanel.tsx      # 右侧：iframe 预览区
+│       │   ├── AdminShell.tsx        # 后台菜单壳
+│       │   ├── ChatMessage.tsx       # 消息组件 (Markdown + skill/MCP/工具事件流)
+│       │   └── PreviewPanel.tsx      # iframe 预览区
 │       └── hooks/
-│           └── useChatSSE.ts         # SSE 流式接收 hook
+│           └── useChatSSE.ts         # SSE 流式接收 + 事件归一化
 └── .gitignore
 ```
 
@@ -78,28 +96,24 @@ Anthropic SSE (message_start → thinking_delta → signature → text_delta →
 ```
 Frontend (Next.js)
     ↓ POST /agent/run
-AgentSdkService.query()
+AgentRunService
+    ↓ SandboxServiceClient
+    ↓ POST http://localhost:3002/tasks
+Sandbox Service
+    ↓ AgentSdkService.query()
     ↓ env: ANTHROPIC_BASE_URL=http://localhost:3001
-@anthropic-ai/claude-agent-sdk
-    ↓ spawns Claude CLI subprocess
-Claude CLI (with ANTHROPIC_BASE_URL)
+Claude CLI
     ↓ POST http://localhost:3001/v1/messages
-ProxyService (Anthropic → OpenAI 转换)
-    ↓ POST https://api.deepseek.com/v1/chat/completions
-DeepSeek API (streaming)
-    ↓ reasoning_content + content
-ProxyService (OpenAI → Anthropic 转换)
+Main Service Proxy (Anthropic → OpenAI/DeepSeek)
     ↓ SSE events (thinking_delta, text_delta, ...)
-Claude CLI subprocess
-    ↓ yields SDKMessages
-@anthropic-ai/claude-agent-sdk
-    ↓ Query async iterable
-AgentSdkService → AgentRunService
-    ↓ 增量落库 + 广播（支持刷新后重新 attach）
-AgentRunService → AgentSdkController
-    ↓ snapshot + SSE events (thinking, tool_start, text, done)
-Frontend (ChatPanel + PreviewPanel)
+Sandbox Service
+    ↓ GET http://localhost:3002/tasks/:id/events
+SandboxServiceClient → AgentRunService
+    ↓ 增量落库 + SSE 广播
+Frontend
 ```
+
+当前实现中，主服务不运行 Claude SDK。`SandboxServiceClient` 通过 HTTP 创建沙箱任务，再通过 SSE 接收 `thinking/text/tool/skill/mcp` 事件流。
 
 ## API 端点
 
@@ -108,6 +122,10 @@ Frontend (ChatPanel + PreviewPanel)
 | `POST /v1/messages` | Anthropic 兼容代理（供 SDK 调用） | Anthropic SSE 协议 |
 | `POST /agent/run` | **SDK 全链路** query() → 代理 → DeepSeek | 自定义 SSE |
 | `GET /agent/status` | 查询任务是否正在运行 | JSON |
+| `GET /skills` | 读取已沉淀 skill 与启用状态 | JSON |
+| `POST /skills/:name/toggle` | 切换 skill 启用状态 | JSON |
+| `GET /mcps` | 读取可注入 MCP server 配置 | JSON |
+| `POST /mcps/:name/toggle` | 切换 MCP server 启用状态 | JSON |
 | `POST /chat/send` | 直接对话（直接调 DeepSeek） | 自定义 SSE |
 | `GET /chat/conversations` | 对话列表 | JSON |
 | `GET /chat/conversations/:id` | 对话详情 | JSON |
@@ -130,7 +148,7 @@ event: tool_start
 data: {"toolName":"Write","toolId":"...","toolInput":{}}
 
 event: tool_update
-data: {"toolName":"Write","toolId":"...","toolInput":{"file_path":"h5-output/game.html"}}
+data: {"toolName":"Write","toolId":"...","toolInput":{"file_path":"sandbox/workspaces/<conversationId>/app/page.tsx"}}
 
 event: text
 data: {"content":"回复文本..."}
@@ -139,11 +157,13 @@ event: done
 data: {"messageId":"...","usage":{"input_tokens":179,"output_tokens":30}}
 ```
 
+Agent 运行过程中还会透出 `skill_load`、`skill_invoke`、`mcp_status`、`mcp_call` 事件，前端与 `thinking`、`tool_start` 等事件按时间顺序展示。
+
 `POST /agent/run` 支持两种模式：
 
 ```json
 // 新建/继续一轮任务
-{ "prompt": "做一个飞机大战游戏", "conversationId": "..." }
+{ "prompt": "生成一个后台任务列表页面", "conversationId": "..." }
 
 // 页面刷新后重连正在运行的任务
 { "conversationId": "...", "resumeSessionId": "...", "reattach": true }
@@ -155,6 +175,57 @@ data: {"messageId":"...","usage":{"input_tokens":179,"output_tokens":30}}
 - 任务运行时，thinking/text/tool 事件会增量写入 SQLite，连续 thinking/text 自动合并。
 - 前端进入任务页先读取 `runStatus`；如果为 `running`，自动调用 `reattach` 重新连接。
 - 后端进程重启后，可通过 `sdkSessionId` 使用 Claude SDK 的 resume 继续任务。
+
+## Skill 与 MCP
+
+- `skills/` 是平台技能源，当前包含 `tailwind-showcase-page` 和 `tailwind-admin-page`。
+- 任务运行时，启用中的 skill 会复制到任务沙箱的 `.claude/skills`，并通过 SDK `skills` 选项注入。
+- `workspace` MCP 负责沙箱内文件读写、搜索和路径校验。
+- `preview` MCP 负责启动、停止和检查前端 dev server。
+- 主服务通过 `/preview/:conversationId/*` 代理沙箱预览地址，不向前端直接暴露沙箱端口。
+- 当 `preview` MCP 返回可访问地址时，后端通过 Socket.IO 向任务 room 推送 `preview` 事件，前端 iframe 自动切换。
+
+## 主服务与沙箱通信
+
+当前 `sandbox/` 已经是独立服务，与 `backend/`、`frontend/` 同级。主服务只通过 HTTP 控制面和 SSE 事件面调用沙箱：
+
+```text
+主服务 (Nest)
+   │ 编排任务、持久化、SSE、预览代理
+   │ POST /tasks
+   │ GET  /tasks/:id/events (SSE)
+   ▼
+sandbox service (:3002)
+   ├── Claude Agent SDK
+   ├── skills 注入
+   ├── workspace MCP
+   └── preview MCP
+```
+
+通信职责：
+
+```text
+控制面：HTTP / gRPC
+  POST /tasks
+  GET  /tasks/:id/status
+  POST /tasks 支持 dryRun: true，用于不调用模型验证事件链路
+
+事件面：SSE / WebSocket / Socket.IO
+  GET /tasks/:id/events
+  chunk / error / end
+
+预览面：主服务反向代理
+  /preview/:conversationId/* → sandbox dev server
+```
+
+当前主服务 → 沙箱任务事件使用 SSE；主服务 → 前端预览就绪通知使用 Socket.IO。后续如果主服务 → 沙箱的事件面也切换 Socket.IO，只需要替换 `SandboxServiceClient` 的传输层，不需要改动 `AgentRunService` 的事件模型。
+
+隔离约束：
+
+- 沙箱不直接访问宿主机文件系统，文件读写只通过 workspace MCP/沙箱 API。
+- 沙箱不直接持有 DeepSeek key，只访问主服务的 Anthropic 兼容代理。
+- dev server 不暴露给外网，主服务通过 `/preview/:conversationId/*` 代理访问。
+- 主服务不直接跑 SDK，只做编排、持久化、代理和事件分发。
 
 ## 数据库模型
 
@@ -181,23 +252,23 @@ data: {"messageId":"...","usage":{"input_tokens":179,"output_tokens":30}}
 | conversationId | UUID | 外键 |
 | createdAt | datetime | 创建时间 |
 
-## 小游戏专精提示词
+## 页面生成系统提示词
 
-`backend/src/agent-sdk/game-system-prompt.ts` 内置了一套网页小游戏专精提示词，会追加到 Claude Code 默认系统提示词之后：
+`sandbox/src/page-system-prompt.ts` 提供展示页/后台页通用规则，会追加到 Claude Code 默认系统提示词之后：
 
-- 输出为单个自包含 HTML 文件，不使用外部 CDN、框架、字体或图片。
-- 文件必须生成到 `backend/h5-output`，不能写外部绝对路径。
-- 游戏必须包含完整核心循环：开始、游玩、结束/胜利、重开。
-- 支持键盘、鼠标、触屏，并使用 `requestAnimationFrame` + `deltaTime`。
-- 优先包含分数/进度、生命/时间、关卡/难度、音效、动效、暂停/重开。
-- 完成后用中文总结游戏名称、文件路径、操作方式和核心特色。
+- 普通展示类/H5 页面使用 Next.js + Tailwind CSS，优先移动端布局。
+- 后台类页面使用 Next.js + Tailwind CSS，包含菜单、列表、表单、详情和状态管理。
+- 不引入 antd、antd-mobile，不依赖外部 CDN 作为运行时依赖。
+- 所有文件写入当前沙箱工作区，不能写外部绝对路径。
+- 使用 workspace MCP 读写项目文件，使用 preview MCP 启动并验证页面。
+- 用户明确要求单文件 HTML 时，才生成自包含静态页面作为 fallback。
 
 ## 输出目录约束
 
-- `backend/src/output-dir.ts` 统一解析 `backend/h5-output`。
-- `AgentSdkService` 通过 `PreToolUse` hook 把 `Write` / `Edit` 的外部路径重写到 `h5-output`。
-- Bash 中明显写到 `h5-output` 之外的重定向、`mkdir`、`touch` 等操作会被拒绝。
-- 任务结束时如果发现仍有外部 HTML，会复制一份到 `h5-output`，前端预览统一从 `/output/<文件名>` 读取。
+- 新任务的工作区统一放在 `sandbox/workspaces/<conversationId>/`，每个任务独立目录。
+- `sandbox/src/agent-sdk.service.ts` 通过 `PreToolUse` hook 把 `Write` / `Edit` 的外部路径重写到当前任务工作区。
+- Bash 中明显写到工作区之外的重定向、`mkdir`、`touch` 等操作会被拒绝。
+- 旧任务的单文件 HTML 仍由主服务从 `backend/h5-output` 读取，兼容历史数据。
 
 ## 快速开始
 
@@ -210,25 +281,36 @@ data: {"messageId":"...","usage":{"input_tokens":179,"output_tokens":30}}
 ### 安装与运行
 
 ```bash
-# 1. 安装后端依赖
-cd backend
-npm install
+# 1. 安装沙箱依赖
+cd sandbox
+npm install --legacy-peer-deps
 
-# 2. 配置环境变量
+# 2. 安装后端依赖
+cd backend
+npm install --legacy-peer-deps
+
+# 3. 配置环境变量
 cp .env.example .env
 # 编辑 .env，填入你的 DEEPSEEK_API_KEY
 
-# 3. 启动后端（端口 3001）
-npm run start:dev
-
 # 4. 新终端，安装前端依赖
 cd frontend
-npm install
+npm install --legacy-peer-deps
 
-# 5. 启动前端（端口 3000）
-npm run dev
+# 5. 分别启动三个服务
+cd ../sandbox && npm run start
+cd ../backend && npm run start:dev
+cd ../frontend && npm run dev
 
 # 6. 浏览器打开 http://localhost:3000
+```
+
+也可以直接运行根目录 `./start.sh` 一键启动三个服务：
+
+```text
+前端:  http://localhost:3000
+后端:  http://localhost:3001
+沙箱:  http://localhost:3002
 ```
 
 ## 技术栈

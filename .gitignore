@@ -7,6 +7,8 @@ node_modules/
 # Build output
 backend/dist/
 frontend/.next/
+sandbox/dist/
+*.tsbuildinfo
 
 # Database
 backend/data/
@@ -24,3 +26,5 @@ Thumbs.db
 # Output
 backend/h5-output/
 backend/proxy-logs/
+proxy-logs/
+sandbox/workspaces/

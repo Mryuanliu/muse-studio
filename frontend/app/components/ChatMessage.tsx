@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ChatMessage as ChatMessageType, EventLog } from '../hooks/useChatSSE';
+import TodoList, { buildTodoItems } from './messages/TodoList';
 
 interface Props {
   message: ChatMessageType;
@@ -12,6 +13,8 @@ interface Props {
 
 /* ── Icons ── */
 function toolEmoji(name: string): string {
+  if (name === 'Skill') return '⚡';
+  if (name?.startsWith('mcp__')) return '🔌';
   if (/bash|sh|shell|command|exec/i.test(name)) return '💻';
   if (/write|Write/i.test(name)) return '📄';
   if (/read|Read|grep|Glob/i.test(name)) return '📖';
@@ -175,6 +178,13 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
   const inputStr = ev.toolInput ? JSON.stringify(ev.toolInput, null, 2) : '';
   const isLong = inputStr.length > 120;
 
+  if (
+    (ev.type === 'tool_start' || ev.type === 'tool_update' || ev.type === 'tool_end') &&
+    (ev.toolName === 'TaskCreate' || ev.toolName === 'TaskUpdate')
+  ) {
+    return null;
+  }
+
   switch (ev.type) {
     case 'thinking':
       return (
@@ -236,11 +246,85 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
         </div>
       );
 
+    case 'tool_end':
+      return (
+        <div className="pl-2 ml-4 border-l-2 border-cyan-500/20 py-1">
+          <div className="text-[10px] text-cyan-400/60 mb-0.5">工具完成</div>
+          <pre className="text-xs text-cyan-300/80 whitespace-pre-wrap break-words bg-black/20 rounded p-2 max-h-48 overflow-y-auto">
+            {typeof ev.toolResult === 'string' ? ev.toolResult : JSON.stringify(ev.toolResult ?? ev.toolInput, null, 2)}
+          </pre>
+        </div>
+      );
+
     case 'tool_progress':
       return (
         <div className="flex gap-2 text-xs text-gray-500 py-0.5 pl-2">
           <span>{toolEmoji(ev.toolName || '')}</span>
           <span className="italic">{ev.toolName} {ev.subtype === 'running' ? '…' : ev.subtype}</span>
+        </div>
+      );
+
+    case 'skill_load':
+      return (
+        <div className="flex gap-2 text-xs text-green-300/70 py-0.5 pl-2">
+          <span>⚡</span>
+          <span>Skill {ev.skillName || ''} {ev.status || 'ready'}</span>
+        </div>
+      );
+
+    case 'skill_invoke':
+      return (
+        <div className="flex flex-col gap-1 py-1 px-2.5 rounded-lg bg-emerald-500/[0.06] border border-emerald-500/[0.12]">
+          <div className="flex items-start gap-2 text-xs">
+            <span className="flex-shrink-0 mt-0.5">⚡</span>
+            <div className="min-w-0 flex-1">
+              <span className="font-semibold text-emerald-300">
+                Skill {ev.skillName || ''}
+              </span>
+              {ev.input && Object.keys(ev.input).length > 0 && (
+                <pre className="mt-1 text-[11px] text-gray-400 whitespace-pre-wrap break-words">
+                  {JSON.stringify(ev.input, null, 2)}
+                </pre>
+              )}
+              {ev.status === 'result' && ev.output !== undefined && (
+                <pre className="mt-1 text-[11px] text-cyan-300/70 whitespace-pre-wrap break-words">
+                  {typeof ev.output === 'string' ? ev.output : JSON.stringify(ev.output, null, 2)}
+                </pre>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+
+    case 'mcp_status':
+      return (
+        <div className="flex gap-2 text-xs text-blue-300/70 py-0.5 pl-2">
+          <span>🔌</span>
+          <span>MCP {ev.serverName || ''} {ev.status || ''}</span>
+        </div>
+      );
+
+    case 'mcp_call':
+      return (
+        <div className="flex flex-col gap-1 py-1 px-2.5 rounded-lg bg-blue-500/[0.06] border border-blue-500/[0.12]">
+          <div className="flex items-start gap-2 text-xs">
+            <span className="flex-shrink-0 mt-0.5">🔌</span>
+            <div className="min-w-0 flex-1">
+              <span className="font-semibold text-blue-300">
+                {ev.serverName || 'MCP'} · {ev.toolName || 'tool'}
+              </span>
+              {ev.input && Object.keys(ev.input).length > 0 && (
+                <pre className="mt-1 text-[11px] text-gray-400 whitespace-pre-wrap break-words">
+                  {JSON.stringify(ev.input, null, 2)}
+                </pre>
+              )}
+              {ev.status === 'result' && ev.output !== undefined && (
+                <pre className="mt-1 text-[11px] text-cyan-300/70 whitespace-pre-wrap break-words">
+                  {typeof ev.output === 'string' ? ev.output : JSON.stringify(ev.output, null, 2)}
+                </pre>
+              )}
+            </div>
+          </div>
         </div>
       );
 
@@ -291,6 +375,7 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
 export default function ChatMessage({ message, isStreaming }: Props) {
   const isUser = message.role === 'user';
   const activity = isUser ? [] : buildChronologicalEvents(message);
+  const todoItems = isUser ? [] : buildTodoItems(message.events);
   const hasActivity = activity.length > 0;
   const hasInlineText = activity.some((ev) => ev.type === 'text_chunk');
 
@@ -306,6 +391,7 @@ export default function ChatMessage({ message, isStreaming }: Props) {
         {/* ── Chronological event log (thinking → tool → thinking → text) ── */}
         {!isUser && hasActivity && (
           <div className="space-y-1.5 mb-3">
+            {todoItems.length > 0 && <TodoList items={todoItems} />}
             {activity.map((ev, i) => (
               <EventItem
                 key={`${ev.type}-${i}-${ev.toolId || ''}`}

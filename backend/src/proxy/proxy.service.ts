@@ -541,9 +541,13 @@ export class ProxyService {
             out.push({ role: 'tool', tool_call_id: callId, content: trContent });
           }
           // OpenAI cannot attach free text to tool_result messages, so emit it
-          // as a separate user turn after the tool results.
+          // as a separate user turn after the tool results. Claude Code's
+          // synthetic "Continue from where you left off." is a no-op for
+          // DeepSeek and only encourages a premature stop.
           const text = textBlocks.map((b) => b.text || '').join('\n');
-          if (text) out.push({ role: 'user', content: text });
+          if (text && text.trim() !== 'Continue from where you left off.') {
+            out.push({ role: 'user', content: text });
+          }
         } else {
           // Regular user message
           out.push({ role: 'user', content: this.textOf(m.content) || '' });
@@ -580,7 +584,12 @@ export class ProxyService {
         } else if (rc) {
           out.push({ role: 'assistant', content: text || ' ', reasoning_content: rc });
         } else {
-          out.push({ role: 'assistant', content: text || ' ' });
+          const trimmed = text.trim();
+          if (trimmed && trimmed !== 'No response requested.') {
+            out.push({ role: 'assistant', content: text || ' ' });
+          } else if (!trimmed) {
+            out.push({ role: 'assistant', content: ' ' });
+          }
         }
       }
     }

@@ -5,9 +5,11 @@ import React from 'react';
 interface Props {
   /** Inline HTML string, or a URL to load in the iframe */
   html?: string;
+  loading?: boolean;
+  error?: boolean;
 }
 
-export default function PreviewPanel({ html }: Props) {
+export default function PreviewPanel({ html, loading = false, error = false }: Props) {
   const iframeRef = React.useRef<HTMLIFrameElement>(null);
   const [src, setSrc] = React.useState<string | undefined>();
   const [refreshNonce, setRefreshNonce] = React.useState(0);
@@ -36,6 +38,23 @@ export default function PreviewPanel({ html }: Props) {
   }, [html, isUrl, refreshNonce]);
 
   if (!html) {
+    if (loading) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full text-center text-gray-500 bg-black/20">
+          <div className="inline-block w-8 h-8 border-2 border-gray-600 border-t-blue-500 rounded-full animate-spin" />
+          <p className="text-sm mt-4">预览启动中...</p>
+          <p className="text-xs mt-1 text-gray-600">等待沙箱返回预览地址</p>
+        </div>
+      );
+    }
+    if (error) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full text-center text-gray-500 bg-black/20">
+          <p className="text-sm text-red-400">预览启动失败</p>
+          <p className="text-xs mt-1 text-gray-600">请检查沙箱项目和 dev server 日志</p>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-col items-center justify-center h-full text-center text-gray-500 bg-black/20">
         <svg className="w-20 h-20 mb-4 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">

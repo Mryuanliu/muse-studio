@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { AgentSdkService } from './agent-sdk.service';
+import { SandboxServiceClient } from '../sandbox/sandbox-service-client';
 import { ConversationService } from '../conversation/conversation.service';
+import { RealtimeService } from '../realtime/realtime.service';
+import { PreviewService } from '../preview/preview.service';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -21,6 +23,7 @@ interface ActiveRun {
   conversationId: string;
   prompt: string;
   assistantMessageId: string;
+  outputDir: string;
   resumeSessionId?: string;
   sdkSessionId?: string;
   status: 'running' | 'completed' | 'error';
@@ -79,8 +82,10 @@ export class AgentRunService {
   private readonly runs = new Map<string, ActiveRun>();
 
   constructor(
-    private readonly agentSdk: AgentSdkService,
+    private readonly agentSdk: SandboxServiceClient,
     private readonly conversation: ConversationService,
+    private readonly realtime: RealtimeService,
+    private readonly preview: PreviewService,
   ) {}
 
   /** Attach to an active in-memory run, or start/resume a backend run. */
@@ -171,6 +176,7 @@ export class AgentRunService {
         conversationId: conv.id,
         prompt: lastUser.content,
         assistantMessageId: lastAssistant.id,
+        outputDir: conv.outputDir || this.agentSdk.getLegacyOutputDir(),
         resumeSessionId,
         baseMessages,
         content: baseAssistant.content || '',
@@ -195,11 +201,21 @@ export class AgentRunService {
     const assistantMsg = await this.conversation.addMessage(conversationId, 'assistant', '');
     await this.conversation.updateRunStatus(conversationId, 'running');
     const conv = await this.conversation.findOne(conversationId);
+    const isLegacyResume = !!conv.sdkSessionId && !conv.outputDir;
+    const outputDir = conv.outputDir || (
+      isLegacyResume
+        ? this.agentSdk.getLegacyOutputDir()
+        : this.agentSdk.getOutputDir(conversationId)
+    );
+    if (!conv.outputDir) {
+      await this.conversation.updateOutputDir(conversationId, outputDir);
+    }
 
     return this.buildRun({
       conversationId,
       prompt,
       assistantMessageId: assistantMsg.id,
+      outputDir,
       resumeSessionId: params.resumeSessionId || conv.sdkSessionId,
       baseMessages: conv.messages.map(normalizeMessage),
       content: '',
@@ -212,6 +228,7 @@ export class AgentRunService {
     conversationId: string;
     prompt: string;
     assistantMessageId: string;
+    outputDir: string;
     resumeSessionId?: string;
     baseMessages: NormalizedMessage[];
     content: string;
@@ -256,7 +273,12 @@ export class AgentRunService {
   private async execute(run: ActiveRun): Promise<void> {
     run.events = compactEvents(run.events);
     try {
-      for await (const chunk of this.agentSdk.run(run.prompt, run.resumeSessionId)) {
+      for await (const chunk of this.agentSdk.run(
+        run.prompt,
+        run.resumeSessionId,
+        run.conversationId,
+        run.outputDir,
+      )) {
         switch (chunk.type) {
           case 'session':
             run.sdkSessionId = chunk.sessionId;
@@ -267,7 +289,7 @@ export class AgentRunService {
               conversationId: run.conversationId,
               messageId: run.assistantMessageId,
               sdkSessionId: run.sdkSessionId,
-              outputDir: this.agentSdk.getOutputDir(),
+              outputDir: run.outputDir,
             });
             break;
           case 'thinking':
@@ -324,6 +346,103 @@ export class AgentRunService {
               status: chunk.subtype,
             });
             break;
+          case 'tool_end':
+            run.events.push({
+              type: 'tool_end',
+              toolName: chunk.toolName,
+              toolId: chunk.toolId,
+              toolInput: chunk.toolInput,
+              toolResult: chunk.toolResult,
+            });
+            await this.persist(run);
+            this.broadcast(run, 'tool_end', {
+              toolName: chunk.toolName,
+              toolId: chunk.toolId,
+              toolInput: chunk.toolInput,
+              toolResult: chunk.toolResult,
+            });
+            break;
+          case 'skill_load':
+            run.events.push({
+              type: 'skill_load',
+              skillName: chunk.skillName,
+              status: chunk.status,
+            });
+            await this.persist(run);
+            this.broadcast(run, 'skill_load', {
+              skillName: chunk.skillName,
+              status: chunk.status,
+            });
+            break;
+          case 'skill_invoke':
+            run.events.push({
+              type: 'skill_invoke',
+              skillName: chunk.skillName,
+              toolId: chunk.toolId,
+              status: chunk.status,
+              input: chunk.input,
+              output: chunk.output,
+            });
+            await this.persist(run);
+            this.broadcast(run, 'skill_invoke', {
+              skillName: chunk.skillName,
+              toolId: chunk.toolId,
+              status: chunk.status,
+              input: chunk.input,
+              output: chunk.output,
+            });
+            break;
+          case 'mcp_status':
+            run.events.push({
+              type: 'mcp_status',
+              serverName: chunk.serverName,
+              status: chunk.status,
+            });
+            await this.persist(run);
+            this.broadcast(run, 'mcp_status', {
+              serverName: chunk.serverName,
+              status: chunk.status,
+            });
+            break;
+          case 'mcp_call':
+            run.events.push({
+              type: 'mcp_call',
+              serverName: chunk.serverName,
+              toolName: chunk.toolName,
+              toolId: chunk.toolId,
+              status: chunk.status,
+              input: chunk.input,
+              output: chunk.output,
+            });
+            await this.persist(run);
+            this.broadcast(run, 'mcp_call', {
+              serverName: chunk.serverName,
+              toolName: chunk.toolName,
+              toolId: chunk.toolId,
+              status: chunk.status,
+              input: chunk.input,
+              output: chunk.output,
+            });
+            if (
+              chunk.status === 'result' &&
+              chunk.serverName === 'preview' &&
+              (chunk.output as any)?.url
+            ) {
+              const targetUrl = (chunk.output as any).url as string;
+              this.preview.setUrl(
+                run.conversationId,
+                targetUrl,
+                (chunk.output as any).port,
+                (chunk.input as any)?.project_path,
+              );
+              this.realtime.emitToConversation(run.conversationId, 'preview', {
+                status: 'ready',
+                url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3001'}/preview/${run.conversationId}`,
+                port: (chunk.output as any).port,
+                projectPath: (chunk.input as any)?.project_path,
+              });
+            }
+            break;
           case 'status':
             run.events.push({ type: 'status', content: chunk.content, subtype: chunk.subtype });
             await this.persist(run);
@@ -336,6 +455,18 @@ export class AgentRunService {
             break;
           case 'done':
             run.status = 'completed';
+            if (!this.preview.getUrl(run.conversationId)) {
+              const match = run.content.match(/https?:\/\/localhost:\d+/);
+              if (match) {
+                this.preview.setUrl(run.conversationId, match[0], Number(new URL(match[0]).port), run.outputDir);
+                this.realtime.emitToConversation(run.conversationId, 'preview', {
+                  status: 'ready',
+                url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3001'}/preview/${run.conversationId}`,
+                  port: Number(new URL(match[0]).port),
+                  projectPath: run.outputDir,
+                });
+              }
+            }
             await this.finish(run);
             this.broadcast(run, 'done', { messageId: run.assistantMessageId, usage: chunk.usage });
             return;
@@ -384,7 +515,7 @@ export class AgentRunService {
     await this.persist(run);
     await this.conversation.updateRunStatus(run.conversationId, 'completed');
 
-    const outputDir = path.resolve(this.agentSdk.getOutputDir());
+    const outputDir = path.resolve(run.outputDir);
     for (const ev of run.events) {
       const fp = ev.toolInput?.file_path || ev.toolInput?.path;
       if (fp && typeof fp === 'string' && /\.html?$/i.test(fp)) {

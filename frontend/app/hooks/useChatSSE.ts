@@ -10,12 +10,19 @@ export interface ToolCall {
 
 /** Chronological event in the assistant's response */
 export interface EventLog {
-  type: 'thinking' | 'tool_start' | 'tool_update' | 'tool_progress' | 'status' | 'command_output' | 'text_chunk';
+  type: 'thinking' | 'tool_start' | 'tool_update' | 'tool_end' | 'tool_progress' | 'status' | 'command_output'
+       | 'text_chunk' | 'skill_load' | 'skill_invoke' | 'mcp_status' | 'mcp_call';
   content?: string;
   toolName?: string;
   toolId?: string;
   toolInput?: any;
+  toolResult?: any;
   subtype?: string;
+  skillName?: string;
+  serverName?: string;
+  status?: string;
+  input?: any;
+  output?: any;
 }
 
 export interface ChatMessage {
@@ -215,6 +222,26 @@ export function useChatSSE(opts?: {
 
             case 'tool_progress':
               pushEvent({ type: 'tool_progress', toolName: data.toolName, toolId: data.toolId, subtype: data.status });
+              break;
+
+            case 'tool_end':
+              pushEvent({ type: 'tool_end', toolName: data.toolName, toolId: data.toolId, toolInput: data.toolInput, toolResult: data.toolResult });
+              break;
+
+            case 'skill_load':
+              pushEvent({ type: 'skill_load', skillName: data.skillName, status: data.status });
+              break;
+
+            case 'skill_invoke':
+              pushEvent({ type: 'skill_invoke', skillName: data.skillName, toolId: data.toolId, status: data.status, input: data.input });
+              break;
+
+            case 'mcp_status':
+              pushEvent({ type: 'mcp_status', serverName: data.serverName, status: data.status });
+              break;
+
+            case 'mcp_call':
+              pushEvent({ type: 'mcp_call', serverName: data.serverName, toolName: data.toolName, toolId: data.toolId, status: data.status, input: data.input });
               break;
 
             case 'status':

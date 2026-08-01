@@ -6,6 +6,9 @@ import { ChatModule } from './chat/chat.module';
 import { AgentSdkModule } from './agent-sdk/agent-sdk.module';
 import { AdminModule } from './admin/admin.module';
 import { OutputController } from './output/output.controller';
+import { PlatformModule } from './platform/platform.module';
+import { RealtimeModule } from './realtime/realtime.module';
+import { PreviewModule } from './preview/preview.module';
 
 @Module({
   imports: [
@@ -15,6 +18,9 @@ import { OutputController } from './output/output.controller';
     ChatModule,
     AgentSdkModule,
     AdminModule,
+    PlatformModule,
+    RealtimeModule,
+    PreviewModule,
   ],
   controllers: [OutputController],
 })

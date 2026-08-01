@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import { io } from 'socket.io-client';
 import { useChatSSE, ChatMessage } from '../../hooks/useChatSSE';
 import ChatMessageComponent from '../../components/ChatMessage';
 import PreviewPanel from '../../components/PreviewPanel';
@@ -14,15 +15,69 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   initialOutputFiles?: string[];
   initialRunStatus?: string;
 }) {
-  const { messages, isStreaming, sendMessage, attach } = useChatSSE({
+  const { messages, isStreaming, sendMessage, attach, conversationId } = useChatSSE({
     initialMessages: initialMsgs,
     initialConversationId: convId,
     initialSdkSessionId: sdkSessionId,
   });
   const [input, setInput] = useState('');
   const [previewHtml, setPreviewHtml] = useState<string | undefined>();
+  const [previewStatus, setPreviewStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const attachRef = React.useRef<string | null>(null);
+  const previewSocketRef = React.useRef<ReturnType<typeof io> | null>(null);
+  const joinedRoomRef = React.useRef<string | null>(null);
+
+  // Preview-ready notifications are pushed through Socket.IO only.
+  useEffect(() => {
+    const activeConvId = conversationId || convId;
+    const socket = previewSocketRef.current || io('http://localhost:3001', {
+      transports: ['websocket'],
+    });
+    previewSocketRef.current = socket;
+
+    const onPreview = (data: any) => {
+      if (data?.status === 'ready' && data?.url) {
+        setPreviewHtml(data.url);
+        setPreviewStatus('ready');
+      } else if (data?.status === 'error') {
+        setPreviewStatus('error');
+      } else {
+        setPreviewStatus('loading');
+      }
+    };
+    socket.on('preview', onPreview);
+
+    if (joinedRoomRef.current && joinedRoomRef.current !== activeConvId) {
+      socket.emit('preview:leave', { conversationIds: [joinedRoomRef.current] });
+      joinedRoomRef.current = null;
+    }
+    if (activeConvId && joinedRoomRef.current !== activeConvId) {
+      socket.emit('preview:join', { conversationIds: [activeConvId] });
+      joinedRoomRef.current = activeConvId;
+    }
+
+    return () => {
+      socket.off('preview', onPreview);
+    };
+  }, [conversationId, convId]);
+
+  useEffect(() => {
+    return () => {
+      if (joinedRoomRef.current) {
+        previewSocketRef.current?.emit('preview:leave', { conversationIds: [joinedRoomRef.current] });
+      }
+      previewSocketRef.current?.disconnect();
+      previewSocketRef.current = null;
+      joinedRoomRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (previewStatus !== 'loading' || previewHtml) return;
+    const timer = setTimeout(() => setPreviewStatus('error'), 15000);
+    return () => clearTimeout(timer);
+  }, [previewStatus, previewHtml]);
 
   // If the page was refreshed while a run was active, attach to the backend
   // run instead of waiting for the user to submit again.
@@ -45,6 +100,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
     if (of && of.length > 0) {
       const filename = of[0].split('/').pop() || of[0];
       setPreviewHtml(`http://localhost:3001/output/${filename}`);
+      setPreviewStatus('ready');
       return;
     }
     // 2. Check all assistant messages' events for Write tool file paths
@@ -57,6 +113,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
         if (fp && typeof fp === 'string' && /\.html?$/i.test(fp)) {
           const filename = fp.split('/').pop() || fp;
           setPreviewHtml(`http://localhost:3001/output/${filename}`);
+          setPreviewStatus('ready');
           return;
         }
       }
@@ -65,7 +122,10 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
     const textMsg = [...messages].reverse().find((m) => m.role === 'assistant' && m.content);
     if (textMsg) {
       const m = textMsg.content.match(/(?:<html[\s\S]*?<\/html>|<!(?:DOCTYPE|doctype)\s+html[\s\S]*?<\/html>)/i);
-      if (m) setPreviewHtml(m[0]);
+      if (m) {
+        setPreviewHtml(m[0]);
+        setPreviewStatus('ready');
+      }
     }
   }, [messages, initialOutputFiles]);
 
@@ -141,7 +201,11 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
 
       {/* Right: Preview (wider) */}
       <div className="flex-1 min-w-0">
-        <PreviewPanel html={previewHtml} />
+        <PreviewPanel
+          html={previewHtml}
+          loading={previewStatus === 'loading'}
+          error={previewStatus === 'error'}
+        />
       </div>
     </div>
   );

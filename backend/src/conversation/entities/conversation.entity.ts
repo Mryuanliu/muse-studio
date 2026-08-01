@@ -20,6 +20,10 @@ export class Conversation {
   @Column({ nullable: true })
   sdkSessionId: string;
 
+  /** Sandbox output directory used for this conversation */
+  @Column({ nullable: true })
+  outputDir: string;
+
   /** Task status: active / archived */
   @Column({ default: 'active' })
   status: string;
