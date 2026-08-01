@@ -37,6 +37,18 @@ interface AnthropicRequest {
   top_p?: number;
 }
 
+function toOpenAiToolId(id?: string, fallback?: string): string {
+  const base = (id || '').replace(/^toolu_/, '').replace(/^call_/, '');
+  if (base) return `call_${base}`;
+  return fallback || `call_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function toAnthropicToolId(id?: string): string {
+  const base = (id || '').replace(/^call_/, '').replace(/^toolu_/, '');
+  if (base) return `toolu_${base}`;
+  return id || '';
+}
+
 /**
  * ProxyService
  *
@@ -169,13 +181,36 @@ export class ProxyService {
     let inThink = false;
     let inText = false;
     // Tool call tracking: OAI tool_call_index → accumulated state
-    let pendingTools: Record<number, { id: string; name: string; args: string }> = {};
-    let inTool = false;
+    const pendingTools = new Map<number, { id: string; name: string; args: string; blockIndex: number }>();
     let fullThink = '';
-    let fullText = '';
 
     const sse = (event: string, data: unknown) => {
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const closeThinkingBlock = () => {
+      if (!inThink) return;
+      sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
+      blockIdx++;
+      inThink = false;
+      const sig = `proxy:${Buffer.from(fullThink.slice(0, 32)).toString('base64').slice(0, 32)}`;
+      sse('content_block_start', { type: 'content_block_start', index: blockIdx, content_block: { type: 'signature', signature: sig } });
+      sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
+      blockIdx++;
+    };
+
+    const closeTextBlock = () => {
+      if (!inText) return;
+      sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
+      blockIdx++;
+      inText = false;
+    };
+
+    const closePendingToolBlocks = () => {
+      for (const tool of pendingTools.values()) {
+        sse('content_block_stop', { type: 'content_block_stop', index: tool.blockIndex });
+      }
+      pendingTools.clear();
     };
 
     try {
@@ -254,7 +289,9 @@ export class ProxyService {
           // ── Token-usage-only chunk (end of stream) ──
           if (!chunk.choices && chunk.usage) {
             if (streamEnded) continue; // already finished via finish_reason
-            if (inText) { sse('content_block_stop', { type: 'content_block_stop', index: blockIdx }); inText = false; }
+            closePendingToolBlocks();
+            closeTextBlock();
+            closeThinkingBlock();
             sse('message_delta', {
               type: 'message_delta',
               delta: { stop_reason: 'end_turn', stop_sequence: null },
@@ -292,20 +329,15 @@ export class ProxyService {
           // ── Text block ──
           if (delta.content && delta.content.length > 0) {
             if (inThink) {
-              sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
-              blockIdx++;
-              inThink = false;
-              const sig = `proxy:${Buffer.from(fullThink.slice(0, 32)).toString('base64').slice(0, 32)}`;
-              sse('content_block_start', { type: 'content_block_start', index: blockIdx, content_block: { type: 'signature', signature: sig } });
-              sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
-              blockIdx++;
+              closeThinkingBlock();
+              closePendingToolBlocks();
               sse('content_block_start', { type: 'content_block_start', index: blockIdx, content_block: { type: 'text', text: '' } });
               inText = true;
-            } else if (!inText && !inTool) {
+            } else if (!inText) {
+              closePendingToolBlocks();
               sse('content_block_start', { type: 'content_block_start', index: blockIdx, content_block: { type: 'text', text: '' } });
               inText = true;
             }
-            fullText += delta.content;
             sse('content_block_delta', { type: 'content_block_delta', index: blockIdx, delta: { type: 'text_delta', text: delta.content } });
           }
 
@@ -314,65 +346,41 @@ export class ProxyService {
           if (toolCalls?.length) {
             for (const tc of toolCalls) {
               const idx = tc.index ?? 0;
-              if (tc.id) {
+              const existing = pendingTools.get(idx);
+              if (tc.id && !existing) {
                 // New tool call — start a tool_use content block
-                if (inThink) {
-                  sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
-                  blockIdx++; inThink = false;
-                  const sig = `proxy:${Buffer.from(fullThink.slice(0, 32)).toString('base64').slice(0, 32)}`;
-                  sse('content_block_start', { type: 'content_block_start', index: blockIdx, content_block: { type: 'signature', signature: sig } });
-                  sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
-                  blockIdx++;
-                }
-                if (inText) {
-                  sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
-                  inText = false; blockIdx++;
-                }
+                closeThinkingBlock();
+                closeTextBlock();
                 // Map call_xxx → toolu_xxx
-                const toolUseId = 'toolu_' + tc.id.replace('call_', '').slice(0, 24);
-                pendingTools[idx] = { id: toolUseId, name: tc.function?.name || '', args: '' };
+                const toolUseId = toAnthropicToolId(tc.id);
+                const blockIndex = blockIdx;
+                pendingTools.set(idx, { id: toolUseId, name: tc.function?.name || '', args: '', blockIndex });
                 sse('content_block_start', {
                   type: 'content_block_start',
-                  index: blockIdx,
+                  index: blockIndex,
                   content_block: { type: 'tool_use', id: toolUseId, name: tc.function?.name || '', input: {} },
                 });
-                inTool = true;
+                blockIdx++;
+              } else if (tc.id && existing) {
+                if (tc.function?.name) existing.name = tc.function.name;
               }
-              if (tc.function?.arguments) {
-                pendingTools[idx].args += tc.function.arguments;
-                if (inTool) {
-                  // Emit pending tool args as input_json_delta
-                  // For streaming, emit the delta chunks as they arrive
-                  sse('content_block_delta', {
-                    type: 'content_block_delta',
-                    index: blockIdx,
-                    delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
-                  });
-                }
+              const pendingTool = existing || pendingTools.get(idx);
+              if (pendingTool && tc.function?.arguments) {
+                pendingTool.args += tc.function.arguments;
+                sse('content_block_delta', {
+                  type: 'content_block_delta',
+                  index: pendingTool.blockIndex,
+                  delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
+                });
               }
             }
           }
 
           // ── Finish ──
           if (finish) {
-            // Close open tool_use blocks
-            if (inTool) {
-              sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
-              blockIdx++; inTool = false;
-            }
-            if (inThink) {
-              sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
-              blockIdx++;
-              inThink = false;
-              const sig = `proxy:${Buffer.from(fullThink.slice(0, 32)).toString('base64').slice(0, 32)}`;
-              sse('content_block_start', { type: 'content_block_start', index: blockIdx, content_block: { type: 'signature', signature: sig } });
-              sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
-              blockIdx++;
-            }
-            if (inText) {
-              sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
-              inText = false;
-            }
+            closePendingToolBlocks();
+            closeThinkingBlock();
+            closeTextBlock();
             // Always send message_delta/message_stop on finish.
             // The usage-only chunk (if it arrives later) is a duplicate but harmless.
             sse('message_delta', {
@@ -387,9 +395,9 @@ export class ProxyService {
       }
 
       // Guard: close any dangling blocks if stream ended without proper events
-      if (inThink) { sse('content_block_stop', { type: 'content_block_stop', index: blockIdx }); blockIdx++; }
-      if (inTool) { sse('content_block_stop', { type: 'content_block_stop', index: blockIdx }); blockIdx++; }
-      if (inText) { sse('content_block_stop', { type: 'content_block_stop', index: blockIdx }); }
+      closeThinkingBlock();
+      closePendingToolBlocks();
+      closeTextBlock();
       res.end();
     } catch (err: any) {
       this.logger.error('Streaming error:', err.message);
@@ -468,7 +476,7 @@ export class ProxyService {
         try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { args = {}; }
         content.push({
           type: 'tool_use',
-          id: 'toolu_' + (tc.id || '').replace('call_', '').slice(0, 24),
+          id: toAnthropicToolId(tc.id),
           name: tc.function?.name || '',
           input: args,
         });
@@ -508,7 +516,11 @@ export class ProxyService {
     let toolCallIdCounter = 0;
 
     for (const m of req.messages) {
-      const blocks = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content;
+      const blocks = typeof m.content === 'string'
+        ? [{ type: 'text', text: m.content }]
+        : Array.isArray(m.content)
+          ? m.content
+          : [];
 
       if (m.role === 'user') {
         // Check if this is a tool_result message
@@ -519,11 +531,19 @@ export class ProxyService {
           // Each tool_result → separate 'tool' role message
           for (const tr of toolResults) {
             const trContent = typeof tr.content === 'string' ? tr.content
-              : (Array.isArray(tr.content) ? tr.content.map((c: any) => c.text || '').join('\n') : '');
+              : Array.isArray(tr.content)
+                ? tr.content.map((c: any) => c.text || '').join('\n')
+                : typeof tr.content === 'object' && tr.content !== null
+                  ? JSON.stringify(tr.content)
+                  : '';
             // Map toolu_xxx to call_xxx
-            const callId = 'call_' + (tr.tool_use_id || '').replace('toolu_', '').slice(0, 24);
+            const callId = toOpenAiToolId(tr.tool_use_id);
             out.push({ role: 'tool', tool_call_id: callId, content: trContent });
           }
+          // OpenAI cannot attach free text to tool_result messages, so emit it
+          // as a separate user turn after the tool results.
+          const text = textBlocks.map((b) => b.text || '').join('\n');
+          if (text) out.push({ role: 'user', content: text });
         } else {
           // Regular user message
           out.push({ role: 'user', content: this.textOf(m.content) || '' });
@@ -540,7 +560,7 @@ export class ProxyService {
           else if (b.type === 'tool_use' && b.name) {
             // Anthropic tool_use → OpenAI tool_call
             toolCallIdCounter++;
-            const callId = 'call_' + (b.id || '').replace('toolu_', '').slice(0, 24) || `call_${toolCallIdCounter}`;
+            const callId = toOpenAiToolId(b.id, `call_${toolCallIdCounter}`);
             toolCalls.push({
               id: callId,
               type: 'function',
@@ -590,6 +610,7 @@ export class ProxyService {
       case 'length': return 'max_tokens';
       case 'content_filter': return 'content_filtered';
       case 'tool_calls': return 'tool_use';
+      case 'function_call': return 'tool_use';
       default: return 'end_turn';
     }
   }

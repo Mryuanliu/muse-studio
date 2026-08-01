@@ -2,6 +2,7 @@ import { Controller, Get, Param, Res } from '@nestjs/common';
 import { Response } from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
+import { resolveOutputDir } from '../output-dir';
 
 /**
  * Serves generated HTML files from the h5-output directory.
@@ -11,7 +12,7 @@ import * as fs from 'fs';
 export class OutputController {
   @Get(':filename')
   serveFile(@Param('filename') filename: string, @Res() res: Response) {
-    const outputDir = path.resolve(process.env.OUTPUT_DIR || './h5-output');
+    const outputDir = resolveOutputDir();
     const filePath = path.join(outputDir, filename);
 
     // Security: prevent directory traversal

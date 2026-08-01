@@ -10,6 +10,7 @@ interface Props {
 export default function PreviewPanel({ html }: Props) {
   const iframeRef = React.useRef<HTMLIFrameElement>(null);
   const [src, setSrc] = React.useState<string | undefined>();
+  const [refreshNonce, setRefreshNonce] = React.useState(0);
 
   // Determine if html is a URL or inline content
   const isUrl = html?.startsWith('http');
@@ -22,7 +23,9 @@ export default function PreviewPanel({ html }: Props) {
 
     if (isUrl) {
       // Load from URL
-      setSrc(html);
+      const url = new URL(html);
+      url.searchParams.set('_r', String(refreshNonce));
+      setSrc(url.toString());
     } else {
       // Write inline HTML to iframe via blob URL
       const blob = new Blob([html], { type: 'text/html' });
@@ -30,7 +33,7 @@ export default function PreviewPanel({ html }: Props) {
       setSrc(url);
       return () => URL.revokeObjectURL(url);
     }
-  }, [html, isUrl]);
+  }, [html, isUrl, refreshNonce]);
 
   if (!html) {
     return (
@@ -52,14 +55,12 @@ export default function PreviewPanel({ html }: Props) {
       <div className="flex-shrink-0 px-4 py-2 border-b border-white/10 flex items-center justify-between">
         <span className="text-xs text-gray-500">H5 预览</span>
         <div className="flex gap-2">
-          {isUrl && (
-            <button
-              onClick={() => iframeRef.current?.contentWindow?.location.reload()}
-              className="text-xs px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-400 transition-colors"
-            >
-              刷新
-            </button>
-          )}
+          <button
+            onClick={() => setRefreshNonce((n) => n + 1)}
+            className="text-xs px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-400 transition-colors"
+          >
+            刷新
+          </button>
         </div>
       </div>
 

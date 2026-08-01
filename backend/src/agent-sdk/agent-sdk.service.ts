@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import * as path from 'path';
 import * as fs from 'fs';
+import { resolveOutputDir } from '../output-dir';
+import { GAME_SYSTEM_PROMPT } from './game-system-prompt';
 
 export interface AgentChunk {
   type: 'session' | 'thinking' | 'text' | 'tool_start' | 'tool_update' | 'tool_end'
@@ -23,13 +25,48 @@ export class AgentSdkService {
   private outputDir: string;
 
   constructor() {
-    this.outputDir = path.resolve(process.env.OUTPUT_DIR || './h5-output');
+    this.outputDir = resolveOutputDir();
     fs.mkdirSync(this.outputDir, { recursive: true });
     this.logger.log(`Output directory: ${this.outputDir}`);
   }
 
   getOutputDir(): string {
     return this.outputDir;
+  }
+
+  /** Force a file target into the platform output directory. */
+  constrainPath(target: string): string {
+    const outputRoot = path.resolve(this.outputDir);
+    const absolute = path.resolve(outputRoot, target);
+    const relative = path.relative(outputRoot, absolute);
+    const isInside = relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    if (isInside) return absolute;
+
+    const filename = path.basename(target).replace(/^\.+/, '') || 'output.html';
+    return path.join(outputRoot, filename);
+  }
+
+  private isOutsidePath(raw: string): boolean {
+    const clean = raw.replace(/^['"]|['"]$/g, '');
+    if (!clean || clean.startsWith('-')) return false;
+    if (clean.startsWith('~/')) return true;
+
+    const outputRoot = path.resolve(this.outputDir);
+    const absolute = path.resolve(outputRoot, clean);
+    const relative = path.relative(outputRoot, absolute);
+    return relative.startsWith('..') || path.isAbsolute(relative);
+  }
+
+  private bashWritesOutside(command: string): boolean {
+    if (!command) return false;
+    const targets: string[] = [];
+    for (const match of command.matchAll(/(?:^|[\s;|])(?:>>|>)\s*([^\s&|;]+)/g)) {
+      targets.push(match[1]);
+    }
+    for (const match of command.matchAll(/\b(?:mkdir|touch|install|tee)\s+(?:-p\s+)?([^\s&|;]+)/g)) {
+      targets.push(match[1]);
+    }
+    return targets.some((target) => this.isOutsidePath(target));
   }
 
   async *run(
@@ -56,6 +93,77 @@ export class AgentSdkService {
         maxTurns: parseInt(process.env.MAX_TURNS || '100', 10),
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
+        systemPrompt: {
+          type: 'preset',
+          preset: 'claude_code',
+          append: GAME_SYSTEM_PROMPT,
+        },
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'Write|Edit',
+              hooks: [
+                async (input: any) => {
+                  const toolInput = input.tool_input || {};
+                  const target = typeof toolInput.file_path === 'string'
+                    ? toolInput.file_path
+                    : toolInput.path;
+                  if (typeof target !== 'string') {
+                    return {
+                      continue: true,
+                      hookSpecificOutput: {
+                        hookEventName: 'PreToolUse' as const,
+                        permissionDecision: 'allow' as const,
+                      },
+                    };
+                  }
+
+                  const constrained = this.constrainPath(target);
+                  return {
+                    continue: true,
+                    hookSpecificOutput: {
+                      hookEventName: 'PreToolUse' as const,
+                      permissionDecision: 'allow' as const,
+                      updatedInput: {
+                        ...toolInput,
+                        file_path: constrained,
+                        path: constrained,
+                      },
+                      additionalContext: `所有生成文件必须保存到项目输出目录：${this.outputDir}`,
+                    },
+                  };
+                },
+              ],
+            },
+            {
+              matcher: 'Bash',
+              hooks: [
+                async (input: any) => {
+                  const command = typeof input.tool_input?.command === 'string'
+                    ? input.tool_input.command
+                    : '';
+                  if (this.bashWritesOutside(command)) {
+                    return {
+                      continue: true,
+                      hookSpecificOutput: {
+                        hookEventName: 'PreToolUse' as const,
+                        permissionDecision: 'deny' as const,
+                        permissionDecisionReason: 'Bash 不允许把文件写到 h5-output 目录之外',
+                      },
+                    };
+                  }
+                  return {
+                    continue: true,
+                    hookSpecificOutput: {
+                      hookEventName: 'PreToolUse' as const,
+                      permissionDecision: 'allow' as const,
+                    },
+                  };
+                },
+              ],
+            },
+          ],
+        },
         ...(resume ? { resume } : {}),
       },
     });
@@ -75,8 +183,10 @@ export class AgentSdkService {
 
       const q = await tryQuery();
 
-      // Track current tool_use block for accumulating input_json_delta
-      let currentToolUse: { name: string; id: string; args: string } | null = null;
+      // Track tool_use blocks by stream index so parallel tool calls keep
+      // their input_json_delta fragments separate.
+      const toolBlocks = new Map<string, { name: string; id: string; args: string }>();
+      const toolKey = (ev: any) => ev.index != null ? `idx:${ev.index}` : `id:${ev.content_block?.id || ''}`;
 
       for await (const msg of q) {
         // Capture session ID from any message
@@ -97,17 +207,23 @@ export class AgentSdkService {
 
             // Tool_use block start
             if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use') {
-              currentToolUse = { name: ev.content_block.name, id: ev.content_block.id, args: '' };
+              toolBlocks.set(toolKey(ev), {
+                name: ev.content_block.name,
+                id: ev.content_block.id,
+                args: '',
+              });
               yield { type: 'tool_start', toolName: ev.content_block.name, toolId: ev.content_block.id, toolInput: {} };
               continue;
             }
 
             // Tool_use block end → emit accumulated args as toolInput
-            if (ev.type === 'content_block_stop' && currentToolUse) {
+            if (ev.type === 'content_block_stop') {
+              const block = toolBlocks.get(toolKey(ev));
+              if (!block) continue;
               let parsed: any = {};
-              try { parsed = JSON.parse(currentToolUse.args); } catch { parsed = {}; }
-              yield { type: 'tool_update', toolName: currentToolUse.name, toolId: currentToolUse.id, toolInput: parsed };
-              currentToolUse = null;
+              try { parsed = JSON.parse(block.args); } catch { parsed = {}; }
+              yield { type: 'tool_update', toolName: block.name, toolId: block.id, toolInput: parsed };
+              toolBlocks.delete(toolKey(ev));
               continue;
             }
 
@@ -117,8 +233,9 @@ export class AgentSdkService {
               if (d?.type === 'thinking_delta' && d.thinking) yield { type: 'thinking', content: d.thinking };
               if (d?.type === 'text_delta' && d.text) yield { type: 'text', content: d.text };
               // Accumulate tool input arguments from streaming JSON
-              if (d?.type === 'input_json_delta' && currentToolUse) {
-                currentToolUse.args += d.partial_json || '';
+              if (d?.type === 'input_json_delta') {
+                const block = toolBlocks.get(toolKey(ev));
+                if (block) block.args += d.partial_json || '';
               }
               continue;
             }

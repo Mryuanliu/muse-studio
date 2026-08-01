@@ -29,9 +29,31 @@ export interface ChatMessage {
   events?: EventLog[];
 }
 
+function parseEvents(value: any): EventLog[] | undefined {
+  if (!value) return undefined;
+  if (Array.isArray(value)) return value as EventLog[];
+  try {
+    return JSON.parse(value) as EventLog[];
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeMessages(messages: any[]): ChatMessage[] {
+  return (messages || []).map((m) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content || '',
+    thinkingChain: m.thinkingChain || undefined,
+    events: parseEvents(m.events),
+  }));
+}
+
 /**
  * SSE hook for the agent run endpoint.
- * Accumulates events into a chronological log on the assistant message.
+ * Supports both starting a new run and reattaching to a run that is still
+ * active after a page refresh. The backend sends a full snapshot first, then
+ * streams only the deltas that happened after that snapshot.
  */
 export function useChatSSE(opts?: {
   initialMessages?: ChatMessage[];
@@ -74,11 +96,21 @@ export function useChatSSE(opts?: {
     });
   };
 
-  const sendMessage = useCallback(async (text: string) => {
-    if (!text.trim() || isStreaming) return;
+  const connectRun = useCallback(async (
+    body: {
+      prompt?: string;
+      conversationId?: string;
+      resumeSessionId?: string;
+      reattach?: boolean;
+    },
+    mode: 'send' | 'attach',
+  ) => {
+    if (isStreaming) return;
 
-    setMessages((prev) => [...prev, { role: 'user', content: text }]);
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', events: [] }]);
+    if (mode === 'send') {
+      setMessages((prev) => [...prev, { role: 'user', content: body.prompt || '' }]);
+      setMessages((prev) => [...prev, { role: 'assistant', content: '', events: [] }]);
+    }
     setIsStreaming(true);
 
     const abortCtrl = new AbortController();
@@ -91,7 +123,7 @@ export function useChatSSE(opts?: {
       const res = await fetch('http://localhost:3001/agent/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: text, conversationId, resumeSessionId: sdkSessionId }),
+        body: JSON.stringify(body),
         signal: abortCtrl.signal,
       });
 
@@ -126,6 +158,20 @@ export function useChatSSE(opts?: {
           try { data = JSON.parse(payload); } catch { continue; }
 
           switch (lastEvent) {
+            case 'snapshot': {
+              const snapshotMessages = normalizeMessages(data.messages || []);
+              setMessages(snapshotMessages);
+              if (data.conversationId) setConversationId(data.conversationId);
+              if (data.sdkSessionId) setSdkSessionId(data.sdkSessionId);
+              if (data.messageId) {
+                updateLastAssistant((msg) => ({ ...msg, id: data.messageId }));
+              }
+              const currentAssistant = [...snapshotMessages].reverse().find((m) => m.role === 'assistant');
+              fullContent = currentAssistant?.content || '';
+              fullThinking = currentAssistant?.thinkingChain || '';
+              break;
+            }
+
             case 'meta':
               if (data.conversationId) setConversationId(data.conversationId);
               if (data.sdkSessionId) setSdkSessionId(data.sdkSessionId);
@@ -200,7 +246,25 @@ export function useChatSSE(opts?: {
       setIsStreaming(false);
       abortRef.current = null;
     }
-  }, [conversationId, sdkSessionId, isStreaming]);
+  }, [isStreaming]);
 
-  return { messages, isStreaming, sendMessage, conversationId, setMessages };
+  const sendMessage = useCallback(async (text: string) => {
+    if (!text.trim() || isStreaming) return;
+    await connectRun({
+      prompt: text,
+      conversationId: conversationId || undefined,
+      resumeSessionId: sdkSessionId || undefined,
+    }, 'send');
+  }, [connectRun, conversationId, sdkSessionId, isStreaming]);
+
+  const attach = useCallback(async (convId: string, sessionId?: string) => {
+    if (isStreaming || !convId) return;
+    await connectRun({
+      conversationId: convId,
+      resumeSessionId: sessionId || undefined,
+      reattach: true,
+    }, 'attach');
+  }, [connectRun, isStreaming]);
+
+  return { messages, isStreaming, sendMessage, attach, conversationId, setMessages };
 }

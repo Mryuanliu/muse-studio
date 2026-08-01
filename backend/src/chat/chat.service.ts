@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Response } from 'express';
 import { DeepseekService, ChatMessage } from './deepseek.service';
 import { ConversationService } from '../conversation/conversation.service';
+import { GAME_SYSTEM_PROMPT } from '../agent-sdk/game-system-prompt';
 
 @Injectable()
 export class ChatService {
@@ -37,8 +38,9 @@ export class ChatService {
     const messages = await this.conversation.getMessages(convId);
     const dsMessages: ChatMessage[] = [];
 
-    if (system) {
-      dsMessages.push({ role: 'system', content: system });
+    const effectiveSystem = system || GAME_SYSTEM_PROMPT;
+    if (effectiveSystem) {
+      dsMessages.push({ role: 'system', content: effectiveSystem });
     }
 
     for (const msg of messages) {
@@ -63,6 +65,7 @@ export class ChatService {
 
     let fullContent = '';
     let fullThinking = '';
+    const events: any[] = [];
 
     try {
       // 5. Send conversation info
@@ -72,15 +75,17 @@ export class ChatService {
       for await (const chunk of this.deepseek.streamChat(dsMessages)) {
         if (chunk.type === 'thinking') {
           fullThinking += chunk.content;
+          events.push({ type: 'thinking', content: chunk.content });
           sendSSE('thinking', { content: chunk.content });
         } else {
           fullContent += chunk.content;
+          events.push({ type: 'text_chunk', content: chunk.content });
           sendSSE('text', { content: chunk.content });
         }
       }
 
       // 7. Save the complete assistant message
-      await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking);
+      await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking, events);
 
       sendSSE('done', { messageId: assistantMsg.id });
       res.end();
@@ -89,7 +94,7 @@ export class ChatService {
 
       // Try to save what we have
       if (fullContent || fullThinking) {
-        await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking);
+        await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking, events);
       }
 
       if (!res.headersSent) {

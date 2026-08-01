@@ -24,6 +24,10 @@ export class Conversation {
   @Column({ default: 'active' })
   status: string;
 
+  /** Run status: idle / running / completed / error */
+  @Column({ default: 'idle' })
+  runStatus: string;
+
   /** Generated output file paths (JSON array of strings) */
   @Column({ type: 'text', nullable: true })
   outputFiles: string;

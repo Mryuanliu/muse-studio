@@ -1,13 +1,13 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ChatMessage as ChatMessageType, EventLog } from '../hooks/useChatSSE';
 
 interface Props {
   message: ChatMessageType;
-  isLast: boolean;
+  isStreaming: boolean;
 }
 
 /* ── Icons ── */
@@ -56,6 +56,119 @@ function formatToolInput(toolName: string, input: any): string {
   }
 }
 
+/** Merge consecutive streaming deltas into one displayable thinking/text block. */
+function coalesceEvents(events: EventLog[]): EventLog[] {
+  const out: EventLog[] = [];
+  for (const ev of events) {
+    if (ev.type === 'thinking' || ev.type === 'text_chunk') {
+      const content = ev.content || '';
+      if (!content) continue;
+      const last = out[out.length - 1];
+      if (last?.type === ev.type) {
+        last.content += content;
+      } else {
+        out.push({ ...ev, content });
+      }
+    } else {
+      out.push(ev);
+    }
+  }
+  return out;
+}
+
+/**
+ * Older messages only persisted thinkingChain + tool events. Split the chain
+ * into likely per-turn segments so those tasks still read as an interleaved
+ * sequence instead of one giant thinking block.
+ */
+function splitLegacyThinking(chain?: string, desiredSegments = 1): string[] {
+  const text = chain?.trim();
+  if (!text) return [];
+
+  const paragraphs: string[] = text
+    .split(/\n\s*\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (paragraphs.length <= 1) {
+    const parts = text
+      .split(/(?=(?:Let me|I['’]?m\b|I['’]?ll\b|The file|The game|Game is done|Now |Next |Finally |After |Before |However ))/i)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length > 1) return parts;
+    return [text];
+  }
+
+  // Some legacy chains are a single long paragraph containing several turns.
+  // Split the longest block at a clear intent boundary until we have enough
+  // blocks to place one thought before each persisted tool call.
+  const intentBoundaries = [
+    'The file path issue',
+    "I'm on macOS",
+    'The game has been',
+    'Game is done',
+    'Let me write the file',
+  ];
+  while (paragraphs.length < desiredSegments) {
+    const longestIndex = paragraphs.reduce(
+      (best, part, index) => part.length > paragraphs[best].length ? index : best,
+      0,
+    );
+    const longest = paragraphs[longestIndex];
+    if (longest.length < 120) break;
+
+    const boundary = intentBoundaries.find((marker) => {
+      const at = longest.indexOf(marker);
+      return at > 30 && at < longest.length - 40;
+    });
+    if (!boundary) break;
+
+    const at = longest.indexOf(boundary);
+    paragraphs.splice(
+      longestIndex,
+      1,
+      longest.slice(0, at).trim(),
+      longest.slice(at).trim(),
+    );
+  }
+
+  return paragraphs.filter(Boolean);
+}
+
+/**
+ * Build the display order for an assistant message. New records carry
+ * thinking/text events already; legacy records are reconstructed from
+ * thinkingChain + content around the persisted tool events.
+ */
+function buildChronologicalEvents(message: ChatMessageType): EventLog[] {
+  const raw = message.events || [];
+  const hasInlineContent = raw.some(
+    (ev) => ev.type === 'thinking' || ev.type === 'text_chunk',
+  );
+  if (hasInlineContent) return coalesceEvents(raw);
+
+  const toolStartCount = raw.filter((ev) => ev.type === 'tool_start').length;
+  const legacyThoughts = splitLegacyThinking(message.thinkingChain, toolStartCount);
+  const events: EventLog[] = [];
+  let thoughtIndex = 0;
+
+  for (const ev of raw) {
+    if (ev.type === 'tool_start' && thoughtIndex < legacyThoughts.length) {
+      events.push({ type: 'thinking', content: legacyThoughts[thoughtIndex++] });
+    }
+    events.push(ev);
+  }
+
+  while (thoughtIndex < legacyThoughts.length) {
+    events.push({ type: 'thinking', content: legacyThoughts[thoughtIndex++] });
+  }
+
+  if (message.content?.trim()) {
+    events.push({ type: 'text_chunk', content: message.content });
+  }
+
+  return coalesceEvents(events);
+}
+
 /* ── Single event item ── */
 function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) {
   const [expanded, setExpanded] = useState(false);
@@ -64,13 +177,18 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
 
   switch (ev.type) {
     case 'thinking':
-      // During streaming (isStreaming), thinking is rendered as typewriter block below
-      if (isStreaming) return null;
-      // History: show as inline line
       return (
-        <div className="flex gap-2 text-xs text-purple-300/60 py-0.5 pl-2">
-          <span className="flex-shrink-0 mt-0.5">🧠</span>
-          <span className="italic leading-relaxed whitespace-pre-wrap break-words">{ev.content}</span>
+        <div className="rounded-lg border border-purple-500/10 bg-purple-500/[0.04] px-2.5 py-1.5">
+          <div className="flex items-center gap-1.5 text-[11px] text-purple-400/80 mb-1">
+            <span className="flex-shrink-0">🧠</span>
+            <span className="font-medium">思考</span>
+            {isStreaming && (
+              <span className="inline-block w-1.5 h-3.5 bg-purple-400/60 animate-pulse" />
+            )}
+          </div>
+          <div className="text-xs text-purple-300/70 leading-relaxed pl-3 border-l-2 border-purple-500/20 font-light whitespace-pre-wrap break-words">
+            {ev.content}
+          </div>
         </div>
       );
 
@@ -156,43 +274,25 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
     }
 
     case 'text_chunk':
-      return null;
+      return (
+        <div className="markdown-content text-sm leading-relaxed">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{ev.content || ''}</ReactMarkdown>
+          {isStreaming && (
+            <span className="inline-block w-2 h-4 bg-cyan-300/60 animate-pulse" />
+          )}
+        </div>
+      );
 
     default:
       return null;
   }
 }
 
-export default function ChatMessage({ message, isLast }: Props) {
-  const [showFullThinking, setShowFullThinking] = useState(false);
-  const [typewriterChars, setTypewriterChars] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+export default function ChatMessage({ message, isStreaming }: Props) {
   const isUser = message.role === 'user';
-  const hasEvents = !!message.events && message.events.length > 0;
-
-  // Typewriter only for real-time streaming, not historical messages
-  const thinkingLen = message.thinkingChain?.length || 0;
-  useEffect(() => {
-    if (!isLast || !thinkingLen) {
-      setTypewriterChars(thinkingLen);
-      return;
-    }
-    if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => {
-      setTypewriterChars((prev) => {
-        if (prev >= thinkingLen) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          return thinkingLen;
-        }
-        return prev + 1;
-      });
-    }, 15);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [thinkingLen, isLast]);
-
-  // Tool counts for badges
-  const toolCalls = (message.events || []).filter((e) => e.type === 'tool_start' || e.type === 'tool_update');
-  const uniqueTools = [...new Set(toolCalls.map((t) => t.toolName).filter(Boolean))];
+  const activity = isUser ? [] : buildChronologicalEvents(message);
+  const hasActivity = activity.length > 0;
+  const hasInlineText = activity.some((ev) => ev.type === 'text_chunk');
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-3`}>
@@ -203,57 +303,32 @@ export default function ChatMessage({ message, isLast }: Props) {
             : 'bg-white/[0.03] border border-white/[0.08] text-gray-200'
         }`}
       >
-        {/* ── Chronological event log (thinking, tool, status, etc. in order) ── */}
-        {!isUser && hasEvents && (
-          <div className="space-y-1 mb-3">
-            {message.events!.map((ev, i) => (
-              <EventItem key={`ev-${i}`} ev={ev} isStreaming={isLast} />
+        {/* ── Chronological event log (thinking → tool → thinking → text) ── */}
+        {!isUser && hasActivity && (
+          <div className="space-y-1.5 mb-3">
+            {activity.map((ev, i) => (
+              <EventItem
+                key={`${ev.type}-${i}-${ev.toolId || ''}`}
+                ev={ev}
+                isStreaming={isStreaming && i === activity.length - 1}
+              />
             ))}
           </div>
         )}
 
-        {/* ── Typewriter thinking block (only for NEW streaming content) ── */}
-        {!isUser && isLast && thinkingLen > 0 && (
-          <div className="mb-3">
-            <div className="flex items-center gap-1.5 text-[11px] text-purple-400/70 mb-1">
-              <span>🧠 思考过程</span>
-              {typewriterChars < thinkingLen && (
-                <span className="inline-block w-1.5 h-3.5 bg-purple-400/60 animate-pulse" />
-              )}
-            </div>
-            <div className="text-xs text-purple-300/70 leading-relaxed pl-4 border-l-2 border-purple-500/20 font-light whitespace-pre-wrap">
-              {message.thinkingChain?.slice(0, typewriterChars) || ''}
-            </div>
-          </div>
-        )}
-
-        {/* ── Tool badges ── */}
-        {uniqueTools.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-1.5">
-            {uniqueTools.map((name, i) => (
-              <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400/80 font-mono">
-                {toolEmoji(name!)} {toolName(name!)}
-              </span>
-            ))}
-            {toolCalls.length > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/10 text-gray-500">×{toolCalls.length}</span>
-            )}
-          </div>
-        )}
-
-        {/* ── Main markdown content ── */}
+        {/* ── Main content is rendered inline when events carry text_chunk ── */}
         <div className="markdown-content text-sm leading-relaxed">
           {isUser ? (
             <p>{message.content}</p>
-          ) : (
+          ) : !hasInlineText ? (
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {message.content || (isLast && !hasEvents ? '处理中…' : '')}
+              {message.content || (isStreaming && !hasActivity ? '处理中…' : '')}
             </ReactMarkdown>
-          )}
+          ) : null}
         </div>
 
         {/* ── Streaming indicator ── */}
-        {isLast && !isUser && !message.content && (
+        {isStreaming && !isUser && !message.content && !hasInlineText && (
           <div className="flex items-center gap-1.5 mt-2 text-xs text-gray-500">
             <span className="animate-pulse">●</span>
             处理中…

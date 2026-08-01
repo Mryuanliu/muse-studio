@@ -105,6 +105,11 @@ export class ConversationService {
     await this.convRepo.update(conversationId, { sdkSessionId });
   }
 
+  /** Save the current agent run status. */
+  async updateRunStatus(conversationId: string, runStatus: string): Promise<void> {
+    await this.convRepo.update(conversationId, { runStatus, updatedAt: new Date() });
+  }
+
   /** Append an output file path to the conversation. */
   async addOutputFile(conversationId: string, filePath: string): Promise<void> {
     const conv = await this.convRepo.findOne({ where: { id: conversationId } });

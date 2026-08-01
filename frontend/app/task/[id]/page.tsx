@@ -7,8 +7,14 @@ import { useChatSSE, ChatMessage } from '../../hooks/useChatSSE';
 import ChatMessageComponent from '../../components/ChatMessage';
 import PreviewPanel from '../../components/PreviewPanel';
 
-function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles }: { convId?: string; initialMsgs?: ChatMessage[]; sdkSessionId?: string; initialOutputFiles?: string[] }) {
-  const { messages, isStreaming, sendMessage } = useChatSSE({
+function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initialRunStatus }: {
+  convId?: string;
+  initialMsgs?: ChatMessage[];
+  sdkSessionId?: string;
+  initialOutputFiles?: string[];
+  initialRunStatus?: string;
+}) {
+  const { messages, isStreaming, sendMessage, attach } = useChatSSE({
     initialMessages: initialMsgs,
     initialConversationId: convId,
     initialSdkSessionId: sdkSessionId,
@@ -16,6 +22,16 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles }: { c
   const [input, setInput] = useState('');
   const [previewHtml, setPreviewHtml] = useState<string | undefined>();
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
+  const attachRef = React.useRef<string | null>(null);
+
+  // If the page was refreshed while a run was active, attach to the backend
+  // run instead of waiting for the user to submit again.
+  useEffect(() => {
+    if (initialRunStatus === 'running' && convId && attachRef.current !== convId) {
+      attachRef.current = convId;
+      attach(convId, sdkSessionId);
+    }
+  }, [initialRunStatus, convId, sdkSessionId, attach]);
 
   // Auto-scroll
   useEffect(() => {
@@ -86,7 +102,11 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles }: { c
           )}
 
           {messages.map((msg, i) => (
-            <ChatMessageComponent key={`${msg.role}-${i}`} message={msg} isLast={i === messages.length - 1} />
+            <ChatMessageComponent
+              key={`${msg.role}-${i}`}
+              message={msg}
+              isStreaming={isStreaming}
+            />
           ))}
           <div ref={messagesEndRef} />
         </div>
@@ -137,6 +157,7 @@ export default function TaskPage() {
     convId: string;
     sdkSessionId?: string;
     outputFiles?: string[];
+    runStatus?: string;
   } | undefined>();
 
   useEffect(() => {
@@ -159,7 +180,13 @@ export default function TaskPage() {
         if (data.outputFiles) {
           try { outputFiles = JSON.parse(data.outputFiles); } catch { outputFiles = [data.outputFiles]; }
         }
-        setInitialData({ msgs, convId: data.id, sdkSessionId: data.sdkSessionId || undefined, outputFiles });
+        setInitialData({
+          msgs,
+          convId: data.id,
+          sdkSessionId: data.sdkSessionId || undefined,
+          outputFiles,
+          runStatus: data.runStatus || undefined,
+        });
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -179,6 +206,7 @@ export default function TaskPage() {
       initialMsgs={isNew ? undefined : initialData?.msgs}
       sdkSessionId={isNew ? undefined : initialData?.sdkSessionId}
       initialOutputFiles={isNew ? undefined : initialData?.outputFiles}
+      initialRunStatus={isNew ? undefined : initialData?.runStatus}
     />
   );
 }

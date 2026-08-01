@@ -74,7 +74,7 @@ export default function ChatPanel({ onPreviewHtml }: Props) {
           <ChatMessage
             key={`${msg.role}-${i}`}
             message={msg}
-            isLast={i === messages.length - 1}
+            isStreaming={isStreaming}
           />
         ))}
         <div ref={messagesEndRef} />
