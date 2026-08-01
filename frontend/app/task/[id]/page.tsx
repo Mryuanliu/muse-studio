@@ -76,6 +76,14 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
     };
   }, []);
 
+  // Keep the URL stable after a new conversation is created so refresh
+  // loads the real task instead of /task/new.
+  useEffect(() => {
+    if (conversationId && (!convId || convId === 'new')) {
+      window.history.replaceState(null, '', `/task/${conversationId}`);
+    }
+  }, [conversationId, convId]);
+
   useEffect(() => {
     if (previewStatus !== 'loading' || previewHtml) return;
     const timer = setTimeout(() => setPreviewStatus('error'), 15000);
