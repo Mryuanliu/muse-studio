@@ -184,10 +184,11 @@ Agent 运行过程中还会透出 `skill_load`、`skill_invoke`、`mcp_status`�
 ```text
 { "status": "starting" }
 { "status": "ready", "url": "http://localhost:3001/preview/<conversationId>" }
+{ "status": "updated" }
 { "status": "error", "message": "..." }
 ```
 
-只有 `ready` 会让前端 iframe 开始加载；`starting` 保持 loading；`error` 展示失败态。
+只有 `ready` 会让前端 iframe 开始加载；`starting` 保持 loading；`updated` 会让已加载的 iframe 自动刷新；`error` 展示失败态。
 
 `POST /agent/run` 支持两种模式：
 

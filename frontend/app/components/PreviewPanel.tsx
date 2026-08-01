@@ -7,9 +7,10 @@ interface Props {
   html?: string;
   loading?: boolean;
   error?: boolean;
+  refreshKey?: number;
 }
 
-export default function PreviewPanel({ html, loading = false, error = false }: Props) {
+export default function PreviewPanel({ html, loading = false, error = false, refreshKey = 0 }: Props) {
   const iframeRef = React.useRef<HTMLIFrameElement>(null);
   const [src, setSrc] = React.useState<string | undefined>();
   const [refreshNonce, setRefreshNonce] = React.useState(0);
@@ -35,7 +36,7 @@ export default function PreviewPanel({ html, loading = false, error = false }: P
       setSrc(url);
       return () => URL.revokeObjectURL(url);
     }
-  }, [html, isUrl, refreshNonce]);
+  }, [html, isUrl, refreshNonce, refreshKey]);
 
   if (!html) {
     if (loading) {

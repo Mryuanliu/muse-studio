@@ -23,6 +23,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   const [input, setInput] = useState('');
   const [previewHtml, setPreviewHtml] = useState<string | undefined>();
   const [previewStatus, setPreviewStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const attachRef = React.useRef<string | null>(null);
   const previewSocketRef = React.useRef<ReturnType<typeof io> | null>(null);
@@ -42,6 +43,8 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
         setPreviewStatus('ready');
       } else if (data?.status === 'error') {
         setPreviewStatus('error');
+      } else if (data?.status === 'updated') {
+        setPreviewRefreshKey((n) => n + 1);
       } else {
         setPreviewStatus('loading');
       }
@@ -205,6 +208,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
           html={previewHtml}
           loading={previewStatus === 'loading'}
           error={previewStatus === 'error'}
+          refreshKey={previewRefreshKey}
         />
       </div>
     </div>

@@ -361,6 +361,14 @@ export class AgentRunService {
               toolInput: chunk.toolInput,
               toolResult: chunk.toolResult,
             });
+            if (
+              (chunk.toolName === 'Write' || chunk.toolName === 'Edit') &&
+              this.preview.getUrl(run.conversationId)
+            ) {
+              this.realtime.emitToConversation(run.conversationId, 'preview', {
+                status: 'updated',
+              });
+            }
             break;
           case 'skill_load':
             run.events.push({

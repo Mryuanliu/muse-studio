@@ -110,8 +110,18 @@ export class PreviewManager {
     const registry = readRegistry(this.registryFile);
     const record = registry.records[key];
     const finalPort = await this.nextPort(requestedPort || record?.port, registry);
-    const finalArgs = args.includes('--port') ? args : [...args, '--', '--port', String(finalPort)];
-    const child = spawn(command, finalArgs, {
+    let resolvedCommand = command;
+    let resolvedArgs = args;
+    if (command === 'npm' && args[0] === 'run' && args[1] === 'dev') {
+      resolvedCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+      resolvedArgs = ['next', 'dev', ...args.slice(2)];
+    }
+    const finalArgs = resolvedArgs.includes('--port')
+      ? resolvedArgs
+      : resolvedCommand === 'npm'
+        ? [...resolvedArgs, '--', '--port', String(finalPort)]
+        : [...resolvedArgs, '--port', String(finalPort)];
+    const child = spawn(resolvedCommand, finalArgs, {
       cwd: project,
       env: {
         ...process.env,
@@ -136,7 +146,7 @@ export class PreviewManager {
     this.updateRecord(key, {
       taskId,
       projectPath: project,
-      command,
+      command: resolvedCommand,
       args: finalArgs,
       port: finalPort,
       pid: child.pid ?? 0,

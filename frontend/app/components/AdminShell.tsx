@@ -18,8 +18,8 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       <aside className="shrink-0 border-b border-white/10 bg-[#111827] lg:w-60 lg:border-b-0 lg:border-r lg:min-h-screen">
         <div className="px-5 py-4 border-b border-white/10">
           <Link href="/tasks" className="block">
-            <div className="text-base font-semibold text-white">H5 平台</div>
-            <div className="text-xs text-gray-500 mt-0.5">工程化页面生成</div>
+            <div className="text-base font-semibold text-white">AI 工程大师</div>
+            <div className="text-xs text-gray-500 mt-0.5">快速生成页面原型 + 汇报页面</div>
           </Link>
         </div>
 
