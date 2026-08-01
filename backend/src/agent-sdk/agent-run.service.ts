@@ -54,6 +54,25 @@ function normalizeMessage(message: any): NormalizedMessage {
   };
 }
 
+function compactEvents(events: any[]): any[] {
+  const out: any[] = [];
+  for (const ev of events) {
+    if (ev.type === 'thinking' || ev.type === 'text_chunk') {
+      const content = ev.content || '';
+      if (!content) continue;
+      const last = out[out.length - 1];
+      if (last?.type === ev.type) {
+        last.content = (last.content || '') + content;
+      } else {
+        out.push({ ...ev, content });
+      }
+    } else {
+      out.push(ev);
+    }
+  }
+  return out;
+}
+
 @Injectable()
 export class AgentRunService {
   private readonly logger = new Logger(AgentRunService.name);
@@ -156,7 +175,7 @@ export class AgentRunService {
         baseMessages,
         content: baseAssistant.content || '',
         thinkingChain: baseAssistant.thinkingChain || '',
-        events: baseAssistant.events ? [...baseAssistant.events] : [],
+        events: compactEvents(baseAssistant.events || []),
       });
     }
 
@@ -221,7 +240,7 @@ export class AgentRunService {
         ...messages[current],
         content: run.content || messages[current].content,
         thinkingChain: run.thinkingChain || messages[current].thinkingChain,
-        events: run.events,
+        events: compactEvents(run.events),
       };
     }
 
@@ -235,6 +254,7 @@ export class AgentRunService {
   }
 
   private async execute(run: ActiveRun): Promise<void> {
+    run.events = compactEvents(run.events);
     try {
       for await (const chunk of this.agentSdk.run(run.prompt, run.resumeSessionId)) {
         switch (chunk.type) {
@@ -252,13 +272,13 @@ export class AgentRunService {
             break;
           case 'thinking':
             run.thinkingChain += chunk.content || '';
-            run.events.push({ type: 'thinking', content: chunk.content });
+            this.appendEvent(run, { type: 'thinking', content: chunk.content });
             await this.persist(run);
             this.broadcast(run, 'thinking', { content: chunk.content });
             break;
           case 'text':
             run.content += chunk.content || '';
-            run.events.push({ type: 'text_chunk', content: chunk.content });
+            this.appendEvent(run, { type: 'text_chunk', content: chunk.content });
             await this.persist(run);
             this.broadcast(run, 'text', { content: chunk.content });
             break;
@@ -346,6 +366,18 @@ export class AgentRunService {
       run.thinkingChain,
       run.events,
     );
+  }
+
+  private appendEvent(run: ActiveRun, ev: any): void {
+    if (ev.type === 'thinking' || ev.type === 'text_chunk') {
+      const content = ev.content || '';
+      const last = run.events[run.events.length - 1];
+      if (last?.type === ev.type) {
+        last.content = (last.content || '') + content;
+        return;
+      }
+    }
+    run.events.push(ev);
   }
 
   private async finish(run: ActiveRun): Promise<void> {
