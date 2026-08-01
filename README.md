@@ -2,6 +2,10 @@
 
 使用 `@anthropic-ai/claude-agent-sdk` + DeepSeek 模型实现的 H5 页面生成平台。核心创新是通过一个 **OpenAI 兼容代理层**，让 Anthropic SDK 透明地使用 DeepSeek 模型。
 
+## 项目展示
+
+![项目展示](image.png)
+
 ## 架构
 
 ```
@@ -42,9 +46,11 @@ h5-platform/
 │   ├── src/
 │   │   ├── service.ts                # HTTP 控制面 + SSE 事件流
 │   │   ├── agent-sdk.service.ts      # 封装 @anthropic-ai/claude-agent-sdk query()
+│   │   ├── preview-manager.ts        # 预览注册表、端口分配、健康检查、自动重启
 │   │   ├── page-system-prompt.ts     # 展示页/后台页通用系统提示词
 │   │   └── types.ts
-│   └── mcp/                          # workspace / preview MCP server
+│   ├── mcp/                          # workspace / preview MCP server
+│   └── preview-registry.json         # 运行期生成：任务预览端口与状态
 ├── skills/                           # 生成技能源
 │   ├── tailwind-showcase-page/
 │   └── tailwind-admin-page/
@@ -130,6 +136,18 @@ Frontend
 | `GET /chat/conversations` | 对话列表 | JSON |
 | `GET /chat/conversations/:id` | 对话详情 | JSON |
 
+### Sandbox Service API
+
+| 端点 | 说明 | 格式 |
+|---|---|---|
+| `POST /tasks` | 创建 Agent 任务 | JSON |
+| `GET /tasks/:id/events` | Agent 事件流 | SSE |
+| `GET /tasks/:id/status` | 任务状态 | JSON |
+| `POST /preview/start` | 启动/确认预览服务 | JSON |
+| `POST /preview/:taskId/restart` | 重启预览服务 | JSON |
+| `GET /preview/:taskId/status` | 预览状态 | JSON |
+| `GET /preview/:taskId/*` | 预览页面/静态资源代理 | HTML/CSS/JS |
+
 ### SSE 事件格式
 
 `POST /agent/run` 使用以下事件格式；页面刷新重连时会先收到 `snapshot` 全量消息，再继续接收增量事件：
@@ -158,6 +176,18 @@ data: {"messageId":"...","usage":{"input_tokens":179,"output_tokens":30}}
 ```
 
 Agent 运行过程中还会透出 `skill_load`、`skill_invoke`、`mcp_status`、`mcp_call` 事件，前端与 `thinking`、`tool_start` 等事件按时间顺序展示。
+
+### Socket.IO 预览状态
+
+任务页通过 Socket.IO 监听 `preview` 事件：
+
+```text
+{ "status": "starting" }
+{ "status": "ready", "url": "http://localhost:3001/preview/<conversationId>" }
+{ "status": "error", "message": "..." }
+```
+
+只有 `ready` 会让前端 iframe 开始加载；`starting` 保持 loading；`error` 展示失败态。
 
 `POST /agent/run` 支持两种模式：
 
@@ -214,11 +244,32 @@ sandbox service (:3002)
   GET /tasks/:id/events
   chunk / error / end
 
-预览面：主服务反向代理
-  /preview/:conversationId/* → sandbox dev server
+预览面：
+  Frontend → Main /preview/:conversationId
+  Main → Sandbox /preview/:taskId/*
+  Sandbox → PreviewRegistry → dev server
 ```
 
-当前主服务 → 沙箱任务事件使用 SSE；主服务 → 前端预览就绪通知使用 Socket.IO。后续如果主服务 → 沙箱的事件面也切换 Socket.IO，只需要替换 `SandboxServiceClient` 的传输层，不需要改动 `AgentRunService` 的事件模型。
+当前主服务 → 沙箱任务事件使用 SSE；主服务 → 前端预览状态使用 Socket.IO。预览状态分为 `starting`、`ready`、`error`，只有 sandbox 健康检查通过后才推送 `ready`。
+
+### PreviewRegistry
+
+- `sandbox/preview-registry.json` 持久化每个任务的预览记录：项目路径、端口、PID、状态、URL。
+- 默认端口范围为 `4100-4200`，可分别用 `PREVIEW_PORT_START`、`PREVIEW_PORT_END` 调整。
+- 端口启动后持久化，项目停止后释放并复用，不再依赖固定端口。
+- `preview MCP` 和 sandbox HTTP 代理共用同一注册表。
+- 健康检查失败时自动重启项目；重启失败不会无限重试。
+
+```text
+Frontend iframe
+  ↓ /preview/:conversationId
+Main Service
+  ↓ /preview/:taskId/*
+Sandbox Service
+  ↓ PreviewRegistry 查询端口
+  ↓ /_next/* 等静态资源同样走预览代理
+沙箱内 dev server
+```
 
 隔离约束：
 
@@ -235,6 +286,7 @@ sandbox service (:3002)
 | id | UUID | 主键 |
 | title | string | 对话标题 |
 | sdkSessionId | string | Claude SDK 会话 ID，用于 resume |
+| outputDir | string | 该任务固定的 sandbox 工作区路径 |
 | status | string | active / archived |
 | runStatus | string | idle / running / completed / error |
 | outputFiles | text | 生成的输出文件路径 JSON |
@@ -316,6 +368,7 @@ cd ../frontend && npm run dev
 ## 技术栈
 
 - **后端框架**: Nest.js 11
+- **沙箱服务**: 独立 Node.js 服务
 - **AI SDK**: @anthropic-ai/claude-agent-sdk
 - **AI 模型**: DeepSeek（通过 OpenAI 兼容 API 调用）
 - **数据库**: SQLite + TypeORM
