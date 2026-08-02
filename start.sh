@@ -78,6 +78,8 @@ cd "$ROOT_DIR/sandbox" && npm run build 2>&1 | sed 's/^/  /'
 echo -e "${GREEN}  ✓ 沙箱构建完成${NC}"
 cd "$ROOT_DIR/backend" && npx nest build 2>&1 | sed 's/^/  /'
 echo -e "${GREEN}  ✓ 后端构建完成${NC}"
+cd "$ROOT_DIR/frontend" && npm run build 2>&1 | sed 's/^/  /'
+echo -e "${GREEN}  ✓ 前端构建完成${NC}"
 echo ""
 
 # ── 5. Start services ──
@@ -101,7 +103,7 @@ sleep 3
 
 # Start frontend (background)
 cd "$ROOT_DIR/frontend"
-npx next dev --port 3000 2>&1 &
+npx next start --port 3000 2>&1 &
 FRONTEND_PID=$!
 
 sleep 2

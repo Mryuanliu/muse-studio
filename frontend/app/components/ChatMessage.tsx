@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Think } from '@ant-design/x';
 import type { ChatMessage as ChatMessageType, EventLog } from '../hooks/useChatSSE';
 import TodoList, { buildTodoItems } from './messages/TodoList';
 
@@ -178,55 +179,36 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
   const inputStr = ev.toolInput ? JSON.stringify(ev.toolInput, null, 2) : '';
   const isLong = inputStr.length > 120;
 
-  if (
-    (ev.type === 'tool_start' || ev.type === 'tool_update' || ev.type === 'tool_end') &&
-    (ev.toolName === 'TaskCreate' || ev.toolName === 'TaskUpdate')
-  ) {
-    return null;
-  }
-
   switch (ev.type) {
     case 'thinking':
       return (
-        <div className="rounded-lg border border-purple-500/10 bg-purple-500/[0.04] px-2.5 py-1.5">
-          <div className="flex items-center gap-1.5 text-[11px] text-purple-400/80 mb-1">
-            <span className="flex-shrink-0">🧠</span>
-            <span className="font-medium">思考</span>
-            {isStreaming && (
-              <span className="inline-block w-1.5 h-3.5 bg-purple-400/60 animate-pulse" />
-            )}
-          </div>
-          <div className="text-xs text-purple-300/70 leading-relaxed pl-3 border-l-2 border-purple-500/20 font-light whitespace-pre-wrap break-words">
-            {ev.content}
-          </div>
-        </div>
+        <Think title="思考" defaultExpanded>{ev.content}</Think>
       );
 
     case 'tool_start':
       return (
-        <div className="flex flex-col gap-1 py-1 px-2.5 rounded-lg bg-amber-500/[0.06] border border-amber-500/[0.12]">
+        <div className="flex flex-col gap-1 py-1 px-2.5 rounded-lg bg-amber-50 border border-amber-200">
           <div className="flex items-start gap-2 text-xs">
             <span className="flex-shrink-0 mt-0.5">{toolEmoji(ev.toolName || '')}</span>
             <div className="min-w-0 flex-1">
-              <span className="font-semibold text-amber-300">{toolName(ev.toolName || '')}</span>
+              <span className="font-semibold text-amber-700">{toolName(ev.toolName || '')}</span>
               {ev.toolInput && (
-                <div className="font-mono text-gray-400 mt-0.5 truncate" title={inputStr}>
+                <div className="font-mono text-gray-500 mt-0.5 truncate" title={inputStr}>
                   {formatToolInput(ev.toolName || '', ev.toolInput)}
                 </div>
               )}
             </div>
           </div>
-          {/* Expandable full input */}
           {isLong && (
             <div className="pl-5">
               <button
                 onClick={() => setExpanded(!expanded)}
-                className="text-[10px] text-amber-500/60 hover:text-amber-400 transition-colors"
+                className="text-[10px] text-amber-600 hover:text-amber-500 transition-colors"
               >
                 {expanded ? '收起' : '展开完整输入'}
               </button>
               {expanded && (
-                <pre className="mt-1 text-xs text-gray-300 bg-black/30 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">
+                <pre className="mt-1 text-xs text-gray-700 bg-gray-100 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">
                   {inputStr}
                 </pre>
               )}
@@ -237,9 +219,9 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
 
     case 'tool_update':
       return (
-        <div className="pl-2 ml-4 border-l-2 border-amber-500/20 py-1">
-          <div className="text-[10px] text-amber-400/50 mb-0.5">工具结果</div>
-          <pre className="text-xs text-cyan-300/80 whitespace-pre-wrap break-words bg-black/20 rounded p-2 max-h-48 overflow-y-auto">
+        <div className="pl-2 ml-4 border-l-2 border-amber-200 py-1">
+          <div className="text-[10px] text-amber-600 mb-0.5">工具结果</div>
+          <pre className="text-xs text-cyan-800 whitespace-pre-wrap break-words bg-gray-50 rounded p-2 max-h-48 overflow-y-auto">
             {ev.toolInput ? JSON.stringify(ev.toolInput, null, 2).slice(0, 2000) : ev.content || ''}
             {(ev.toolInput && JSON.stringify(ev.toolInput).length > 2000) ? '\n…(内容过长)' : ''}
           </pre>
@@ -248,9 +230,9 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
 
     case 'tool_end':
       return (
-        <div className="pl-2 ml-4 border-l-2 border-cyan-500/20 py-1">
-          <div className="text-[10px] text-cyan-400/60 mb-0.5">工具完成</div>
-          <pre className="text-xs text-cyan-300/80 whitespace-pre-wrap break-words bg-black/20 rounded p-2 max-h-48 overflow-y-auto">
+        <div className="pl-2 ml-4 border-l-2 border-cyan-200 py-1">
+          <div className="text-[10px] text-cyan-700 mb-0.5">工具完成</div>
+          <pre className="text-xs text-cyan-900 whitespace-pre-wrap break-words bg-gray-50 rounded p-2 max-h-48 overflow-y-auto">
             {typeof ev.toolResult === 'string' ? ev.toolResult : JSON.stringify(ev.toolResult ?? ev.toolInput, null, 2)}
           </pre>
         </div>
@@ -274,11 +256,11 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
 
     case 'skill_invoke':
       return (
-        <div className="flex flex-col gap-1 py-1 px-2.5 rounded-lg bg-emerald-500/[0.06] border border-emerald-500/[0.12]">
+        <div className="flex flex-col gap-1 py-1 px-2.5 rounded-lg bg-emerald-50 border border-emerald-200">
           <div className="flex items-start gap-2 text-xs">
             <span className="flex-shrink-0 mt-0.5">⚡</span>
             <div className="min-w-0 flex-1">
-              <span className="font-semibold text-emerald-300">
+              <span className="font-semibold text-emerald-700">
                 Skill {ev.skillName || ''}
               </span>
               {ev.input && Object.keys(ev.input).length > 0 && (
@@ -287,7 +269,7 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
                 </pre>
               )}
               {ev.status === 'result' && ev.output !== undefined && (
-                <pre className="mt-1 text-[11px] text-cyan-300/70 whitespace-pre-wrap break-words">
+                <pre className="mt-1 text-[11px] text-cyan-700 whitespace-pre-wrap break-words">
                   {typeof ev.output === 'string' ? ev.output : JSON.stringify(ev.output, null, 2)}
                 </pre>
               )}
@@ -298,7 +280,7 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
 
     case 'mcp_status':
       return (
-        <div className="flex gap-2 text-xs text-blue-300/70 py-0.5 pl-2">
+        <div className="flex gap-2 text-xs text-blue-600 py-0.5 pl-2">
           <span>🔌</span>
           <span>MCP {ev.serverName || ''} {ev.status || ''}</span>
         </div>
@@ -306,11 +288,11 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
 
     case 'mcp_call':
       return (
-        <div className="flex flex-col gap-1 py-1 px-2.5 rounded-lg bg-blue-500/[0.06] border border-blue-500/[0.12]">
+        <div className="flex flex-col gap-1 py-1 px-2.5 rounded-lg bg-blue-50 border border-blue-200">
           <div className="flex items-start gap-2 text-xs">
             <span className="flex-shrink-0 mt-0.5">🔌</span>
             <div className="min-w-0 flex-1">
-              <span className="font-semibold text-blue-300">
+              <span className="font-semibold text-blue-700">
                 {ev.serverName || 'MCP'} · {ev.toolName || 'tool'}
               </span>
               {ev.input && Object.keys(ev.input).length > 0 && (
@@ -319,7 +301,7 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
                 </pre>
               )}
               {ev.status === 'result' && ev.output !== undefined && (
-                <pre className="mt-1 text-[11px] text-cyan-300/70 whitespace-pre-wrap break-words">
+                <pre className="mt-1 text-[11px] text-cyan-700 whitespace-pre-wrap break-words">
                   {typeof ev.output === 'string' ? ev.output : JSON.stringify(ev.output, null, 2)}
                 </pre>
               )}
@@ -349,7 +331,7 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
               {expanded ? '收起输出' : `展开完整输出 (${ev.content?.length} 字符)`}
             </button>
           )}
-          <pre className="bg-black/30 rounded-lg p-2.5 text-cyan-300/80 overflow-x-auto max-h-64 leading-relaxed border border-white/5">
+          <pre className="bg-gray-100 rounded-lg p-2.5 text-cyan-900 overflow-x-auto max-h-64 leading-relaxed border border-gray-200">
             {display}
             {isLongOutput && !expanded && '…'}
           </pre>
@@ -384,8 +366,8 @@ export default function ChatMessage({ message, isStreaming }: Props) {
       <div
         className={`max-w-[88%] rounded-2xl px-4 py-3 ${
           isUser
-            ? 'bg-blue-600/20 border border-blue-500/30 text-blue-100'
-            : 'bg-white/[0.03] border border-white/[0.08] text-gray-200'
+            ? 'bg-blue-50 border border-blue-200 text-blue-800'
+            : 'bg-white border border-gray-200 text-gray-800'
         }`}
       >
         {/* ── Chronological event log (thinking → tool → thinking → text) ── */}
