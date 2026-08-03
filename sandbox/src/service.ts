@@ -176,7 +176,7 @@ function proxyPreview(
     },
     (proxyRes) => {
       const contentType = String(proxyRes.headers['content-type'] || '');
-      const shouldRewrite = /text\/html|text\/css/.test(contentType);
+      const shouldRewrite = /text\/html|text\/css|application\/javascript|text\/javascript/.test(contentType);
       const headers: Record<string, any> = {
         ...proxyRes.headers,
         'Access-Control-Allow-Origin': '*',

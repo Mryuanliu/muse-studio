@@ -10,4 +10,5 @@ export const PAGE_SYSTEM_PROMPT = `
 6. 项目完成后使用 preview MCP 启动 dev server，确认页面可访问后总结项目路径、预览地址和主要功能。
 7. 如果用户明确要求单文件 HTML，再生成自包含静态页面，并保留完整交互和响应式样式。
 8. 工具返回后必须继续推进任务，不能只回复 "No response requested" 或提前结束，直到项目完成并通过 preview 验证。
+9. 复杂任务应使用 Agent/Task 启动子代理：frontend-builder 负责实现，code-reviewer 负责质量审查，preview-verifier 负责预览验证。
 `.trim();

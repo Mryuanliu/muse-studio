@@ -4,6 +4,27 @@ import * as fs from 'fs';
 import { PAGE_SYSTEM_PROMPT } from './page-system-prompt';
 import { AgentChunk, SandboxConfig } from './types';
 
+const SANDBOX_AGENTS = {
+  'frontend-builder': {
+    description: '生成和修改前端项目代码，负责页面结构、组件、样式与交互实现。',
+    prompt: '你是一名前端实现工程师。只修改当前沙箱工作区内的项目文件，遵循已加载 skill 的工程规范。完成任务后返回文件列表和验证结果。',
+    tools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'Bash', 'TaskCreate', 'TaskUpdate', 'TaskList'],
+    permissionMode: 'bypassPermissions' as const,
+  },
+  'code-reviewer': {
+    description: '审查前端代码质量、类型安全、可维护性和明显缺陷。',
+    prompt: '你是一名前端代码评审工程师。使用只读工具检查代码，返回按严重程度排序的问题列表，并给出修改建议。',
+    tools: ['Read', 'Grep', 'Glob', 'TaskList'],
+    permissionMode: 'dontAsk' as const,
+  },
+  'preview-verifier': {
+    description: '启动和验证前端 dev server 是否可访问。',
+    prompt: '你负责验证预览服务。使用 Bash 检查端口和页面响应，使用 preview MCP 启动/停止 dev server。返回可访问 URL 或失败原因。',
+    tools: ['Read', 'Bash', 'TaskList'],
+    permissionMode: 'bypassPermissions' as const,
+  },
+};
+
 export class AgentSdkService {
   private outputDir: string;
 
@@ -114,6 +135,11 @@ export class AgentSdkService {
           type: 'preset',
           preset: 'claude_code',
           append: PAGE_SYSTEM_PROMPT,
+        },
+        agents: SANDBOX_AGENTS,
+        forwardSubagentText: true,
+        toolConfig: {
+          askUserQuestion: { previewFormat: 'html' },
         },
         skills: enabledSkills,
         mcpServers: this.mcpServers(),

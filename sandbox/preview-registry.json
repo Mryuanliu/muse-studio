@@ -1,5 +1,5 @@
 {
-  "lastPort": 4100,
+  "lastPort": 4102,
   "records": {
     "5dbe7296-1f23-4610-9826-4844848a93ab": {
       "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/5dbe7296-1f23-4610-9826-4844848a93ab",
@@ -16,6 +16,22 @@
       "port": 4100,
       "pid": 5490,
       "url": "http://localhost:4100"
+    },
+    "11bec1bc-0861-4b86-9a8d-7f7f06006711": {
+      "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/11bec1bc-0861-4b86-9a8d-7f7f06006711",
+      "command": "npx",
+      "args": [
+        "next",
+        "dev",
+        "--port",
+        "4102"
+      ],
+      "status": "running",
+      "updatedAt": 1785768349520,
+      "taskId": "11bec1bc-0861-4b86-9a8d-7f7f06006711",
+      "port": 4102,
+      "pid": 17529,
+      "url": "http://localhost:4102"
     }
   }
 }
