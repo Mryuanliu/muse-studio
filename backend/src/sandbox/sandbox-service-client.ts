@@ -8,6 +8,7 @@ export class SandboxServiceClient {
   private readonly backendRoot = path.resolve(__dirname, '../..');
   private readonly sandboxRoot = path.resolve(this.backendRoot, '../sandbox');
   private readonly baseUrl = process.env.SANDBOX_SERVICE_URL || 'http://localhost:3002';
+  private readonly taskIds = new Map<string, string>();
 
   constructor(private readonly platform: PlatformService) {}
 
@@ -33,6 +34,8 @@ export class SandboxServiceClient {
       enabledMcps: this.platform.enabledMcps().map((server) => server.name),
       proxyUrl: process.env.AGENT_PROXY_URL || 'http://localhost:3001',
       previewTaskId: conversationId,
+      conversationId,
+      backendUrl: process.env.BACKEND_URL || 'http://localhost:3001',
     };
 
     const createRes = await fetch(`${this.baseUrl}/tasks`, {
@@ -46,6 +49,7 @@ export class SandboxServiceClient {
     }
 
     const created = await createRes.json() as { taskId: string };
+    this.taskIds.set(conversationId || 'default', created.taskId);
     const eventsRes = await fetch(`${this.baseUrl}/tasks/${created.taskId}/events`);
     if (!eventsRes.ok || !eventsRes.body) {
       throw new Error(`Sandbox event stream failed: HTTP ${eventsRes.status}`);
@@ -93,6 +97,19 @@ export class SandboxServiceClient {
       }
     } finally {
       reader.releaseLock();
+      this.taskIds.delete(conversationId || 'default');
+    }
+  }
+
+  async stop(conversationId: string): Promise<void> {
+    const taskId = this.taskIds.get(conversationId || 'default');
+    if (!taskId) return;
+    try {
+      await fetch(`${this.baseUrl}/tasks/${encodeURIComponent(taskId)}/cancel`, {
+        method: 'POST',
+      });
+    } finally {
+      this.taskIds.delete(conversationId || 'default');
     }
   }
 }

@@ -7,11 +7,13 @@ import { AgentChunk, SandboxConfig } from './types';
 
 interface SandboxTask {
   id: string;
-  status: 'running' | 'completed' | 'error';
+  status: 'running' | 'completed' | 'error' | 'cancelled';
   buffer: AgentChunk[];
   subscribers: Set<http.ServerResponse>;
   done: boolean;
   error?: string;
+  cancelled?: boolean;
+  cancel?: () => void;
 }
 
 interface StartTaskPayload {
@@ -79,6 +81,7 @@ async function runTask(task: SandboxTask, payload: StartTaskPayload): Promise<vo
     enabledSkills: [],
     enabledMcps: [],
     proxyUrl: 'http://localhost:3001',
+    backendUrl: process.env.BACKEND_URL || 'http://localhost:3001',
   };
 
   try {
@@ -98,15 +101,28 @@ async function runTask(task: SandboxTask, payload: StartTaskPayload): Promise<vo
     }
 
     const service = new AgentSdkService(config);
+    task.cancel = () => {
+      task.cancelled = true;
+      service.stop();
+    };
+    if (task.cancelled) {
+      service.stop();
+    }
     for await (const chunk of service.run(payload.prompt || '', payload.resumeSessionId)) {
       task.buffer.push(chunk);
       emit(task, 'chunk', chunk);
     }
-    task.status = 'completed';
+    task.status = service.isStopped() ? 'cancelled' : 'completed';
   } catch (error: any) {
-    task.status = 'error';
-    task.error = error?.message || 'Sandbox task error';
-    emit(task, 'error', { message: task.error });
+    if (task.cancelled) {
+      task.status = 'cancelled';
+      task.buffer.push({ type: 'stopped' });
+      emit(task, 'chunk', { type: 'stopped' });
+    } else {
+      task.status = 'error';
+      task.error = error?.message || 'Sandbox task error';
+      emit(task, 'error', { message: task.error });
+    }
   } finally {
     task.done = true;
     emit(task, 'end', {});
@@ -283,6 +299,9 @@ const server = http.createServer(async (req, res) => {
         done: false,
       };
       tasks.set(task.id, task);
+      task.cancel = () => {
+        task.cancelled = true;
+      };
       sendJson(res, 200, { taskId: task.id });
       void runTask(task, payload);
       return;
@@ -355,6 +374,18 @@ const server = http.createServer(async (req, res) => {
   const previewProxyMatch = url.pathname.match(/^\/preview\/([^/]+)(?:\/.*)?$/);
   if (req.method === 'GET' && previewProxyMatch) {
     await handlePreviewProxy(req, res, decodeURIComponent(previewProxyMatch[1]));
+    return;
+  }
+
+  const cancelMatch = url.pathname.match(/^\/tasks\/([^/]+)\/cancel$/);
+  if (req.method === 'POST' && cancelMatch) {
+    const task = tasks.get(decodeURIComponent(cancelMatch[1]));
+    if (!task) {
+      sendJson(res, 404, { error: 'Task not found' });
+      return;
+    }
+    task.cancel?.();
+    sendJson(res, 200, { taskId: task.id, status: 'cancelled' });
     return;
   }
 

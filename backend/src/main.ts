@@ -5,6 +5,7 @@ import { AppModule } from './app.module';
 import { RealtimeService } from './realtime/realtime.service';
 import { PreviewService } from './preview/preview.service';
 import { ConversationService } from './conversation/conversation.service';
+import { AskUserService } from './agent-sdk/ask-user.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -30,6 +31,7 @@ async function bootstrap() {
   realtime.setServer(io);
   const previewService = app.get(PreviewService);
   const conversationService = app.get(ConversationService);
+  const askUserService = app.get(AskUserService);
   const publicBase = process.env.PUBLIC_BASE_URL || 'http://localhost:3001';
   const sandboxUrl = process.env.SANDBOX_SERVICE_URL || 'http://localhost:3002';
 
@@ -43,6 +45,10 @@ async function bootstrap() {
       for (const id of ids) {
         if (typeof id === 'string') {
           void socket.join(`conversation:${id}`);
+
+          for (const pendingQuestion of askUserService.getPendingForConversation(id)) {
+            socket.emit('ask_user', pendingQuestion);
+          }
 
           const conv = await conversationService.findOne(id).catch(() => null);
           const isRunning = conv?.runStatus === 'running';

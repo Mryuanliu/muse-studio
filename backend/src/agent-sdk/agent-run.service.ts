@@ -3,6 +3,7 @@ import { SandboxServiceClient } from '../sandbox/sandbox-service-client';
 import { ConversationService } from '../conversation/conversation.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { PreviewService } from '../preview/preview.service';
+import { AskUserService } from './ask-user.service';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -26,7 +27,7 @@ interface ActiveRun {
   outputDir: string;
   resumeSessionId?: string;
   sdkSessionId?: string;
-  status: 'running' | 'completed' | 'error';
+  status: 'running' | 'completed' | 'error' | 'stopped';
   errorMessage?: string;
   baseMessages: NormalizedMessage[];
   content: string;
@@ -86,6 +87,7 @@ export class AgentRunService {
     private readonly conversation: ConversationService,
     private readonly realtime: RealtimeService,
     private readonly preview: PreviewService,
+    private readonly askUser: AskUserService,
   ) {}
 
   /** Attach to an active in-memory run, or start/resume a backend run. */
@@ -127,7 +129,7 @@ export class AgentRunService {
     if (active) {
       return {
         conversationId,
-        runStatus: active.status,
+        runStatus: active.status === 'stopped' ? 'idle' : active.status,
         sdkSessionId: active.sdkSessionId,
         isRunning: active.status === 'running',
       };
@@ -140,6 +142,47 @@ export class AgentRunService {
       sdkSessionId: conv.sdkSessionId,
       isRunning: (conv.runStatus || 'idle') === 'running',
     };
+  }
+
+  async stop(conversationId: string): Promise<{ stopped: boolean; message?: string }> {
+    const run = this.runs.get(conversationId);
+    if (!run || run.status !== 'running') {
+      try {
+        const conv = await this.conversation.findOne(conversationId);
+        if (conv?.runStatus === 'running') {
+          await this.conversation.updateRunStatus(conversationId, 'idle');
+        }
+      } catch {
+        // conversation may have been deleted
+      }
+      return { stopped: false, message: '当前会话没有运行中的本轮任务' };
+    }
+
+    run.status = 'stopped';
+    this.askUser.cancelForConversation(conversationId);
+    try {
+      await this.agentSdk.stop(conversationId);
+    } catch (error: any) {
+      this.logger.warn(`Failed to stop sandbox task for ${conversationId}: ${error.message}`);
+    }
+
+    if (!run.events.some((event) => event.type === 'status' && event.subtype === 'stopped')) {
+      run.events.push({
+        type: 'status',
+        content: '⏹ 已停止本轮生成',
+        subtype: 'stopped',
+      });
+      run.content = `${run.content ? run.content + '\n\n' : ''}⏹ 已停止本轮生成`;
+      try {
+        await this.persist(run);
+      } catch (error: any) {
+        this.logger.warn(`Failed to persist stopped run ${conversationId}: ${error.message}`);
+      }
+    }
+
+    await this.conversation.updateRunStatus(conversationId, 'idle').catch(() => undefined);
+    this.broadcast(run, 'stopped', { message: '已停止本轮生成' });
+    return { stopped: true, message: '已停止本轮生成' };
   }
 
   private async createRun(params: {
@@ -478,9 +521,38 @@ export class AgentRunService {
             await this.finish(run);
             this.broadcast(run, 'done', { messageId: run.assistantMessageId, usage: chunk.usage });
             return;
+          case 'stopped':
+            if (run.status !== 'stopped') {
+              run.status = 'stopped';
+              run.events.push({
+                type: 'status',
+                content: '⏹ 已停止本轮生成',
+                subtype: 'stopped',
+              });
+              run.content = `${run.content ? run.content + '\n\n' : ''}⏹ 已停止本轮生成`;
+              await this.persist(run);
+              this.broadcast(run, 'stopped', { message: '已停止本轮生成' });
+            }
+            await this.conversation.updateRunStatus(run.conversationId, 'idle');
+            return;
         }
       }
     } catch (error: any) {
+      if (run.status === 'stopped' || error?.name === 'AbortError' || /abort|closed/i.test(error?.message || '')) {
+        if (run.status !== 'stopped') {
+          run.status = 'stopped';
+          run.events.push({
+            type: 'status',
+            content: '⏹ 已停止本轮生成',
+            subtype: 'stopped',
+          });
+          run.content = `${run.content ? run.content + '\n\n' : ''}⏹ 已停止本轮生成`;
+          await this.persist(run);
+        }
+        await this.conversation.updateRunStatus(run.conversationId, 'idle');
+        this.broadcast(run, 'stopped', { message: '已停止本轮生成' });
+        return;
+      }
       this.logger.error(`Agent run failed for ${run.conversationId}:`, error.message);
       run.status = 'error';
       run.errorMessage = error.message || 'Agent run error';

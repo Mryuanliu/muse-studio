@@ -7,7 +7,7 @@ import { AgentChunk, SandboxConfig } from './types';
 const SANDBOX_AGENTS = {
   'frontend-builder': {
     description: '生成和修改前端项目代码，负责页面结构、组件、样式与交互实现。',
-    prompt: '你是一名前端实现工程师。只修改当前沙箱工作区内的项目文件，遵循已加载 skill 的工程规范。完成任务后返回文件列表和验证结果。',
+    prompt: '你是一名前端实现工程师。只修改当前沙箱工作区内的项目文件，遵循已加载 skill 的工程规范。完成任务并返回结果后必须立即结束，不残留后台进程，不继续修改文件。',
     tools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'Bash', 'TaskCreate', 'TaskUpdate', 'TaskList'],
     permissionMode: 'bypassPermissions' as const,
   },
@@ -27,6 +27,9 @@ const SANDBOX_AGENTS = {
 
 export class AgentSdkService {
   private outputDir: string;
+  private currentQuery?: ReturnType<typeof query>;
+  private abortController?: AbortController;
+  private stopped = false;
 
   constructor(private readonly config: SandboxConfig) {
     this.outputDir = path.resolve(config.outputDir);
@@ -36,6 +39,20 @@ export class AgentSdkService {
 
   getOutputDir(): string {
     return this.outputDir;
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.abortController?.abort();
+    try {
+      this.currentQuery?.close();
+    } catch {
+      // query may already be closed
+    }
+  }
+
+  isStopped(): boolean {
+    return this.stopped;
   }
 
   /** Force a file target into the platform output directory. */
@@ -105,12 +122,40 @@ export class AgentSdkService {
     return servers;
   }
 
+  private async waitForUserAnswer(
+    input: Record<string, unknown>,
+    options: { requestId: string; toolUseID: string; signal: AbortSignal },
+  ): Promise<Record<string, any>> {
+    const backendUrl = this.config.backendUrl || process.env.BACKEND_URL || 'http://localhost:3001';
+    const conversationId = this.config.conversationId || this.config.previewTaskId || '';
+    const questions = Array.isArray((input as any).questions) ? (input as any).questions : [];
+
+    const res = await fetch(`${backendUrl}/agent/ask-user/wait`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestId: options.requestId,
+        toolUseID: options.toolUseID,
+        conversationId,
+        questions,
+      }),
+      signal: options.signal,
+    });
+    if (!res.ok) {
+      const message = await res.text().catch(() => '');
+      throw new Error(`AskUser registration failed: HTTP ${res.status} ${message}`);
+    }
+    return res.json();
+  }
+
   async *run(
     prompt: string,
     resumeSessionId?: string,
   ): AsyncGenerator<AgentChunk, void, undefined> {
     process.stderr.write(`[sandbox] agent run: "${prompt.slice(0, 60)}..."${resumeSessionId ? ' (resume)' : ''}\n`);
 
+    this.stopped = false;
+    this.abortController = new AbortController();
     let sdkSessionId: string | undefined;
     let sessionYielded = false;
     const enabledSkills = this.syncSkills();
@@ -125,11 +170,27 @@ export class AgentSdkService {
         },
         cwd: this.outputDir,
         tools: { type: 'preset', preset: 'claude_code' },
+        abortController: this.abortController,
         // Max API round-trips (model → tool_use → tool_result → model...).
         // Each Write/Bash/Read call counts as one turn. Override via MAX_TURNS env.
         maxTurns: parseInt(process.env.MAX_TURNS || '100', 10),
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
+        canUseTool: async (toolName, input, options) => {
+          if (toolName !== 'AskUserQuestion') {
+            return { behavior: 'allow' as const };
+          }
+          const answer = await this.waitForUserAnswer(input, options);
+          return {
+            behavior: 'allow' as const,
+            updatedInput: {
+              ...input,
+              answers: answer.answers || {},
+              ...(answer.response ? { response: answer.response } : {}),
+              ...(answer.annotations ? { annotations: answer.annotations } : {}),
+            },
+          };
+        },
         includePartialMessages: true,
         systemPrompt: {
           type: 'preset',
@@ -229,6 +290,7 @@ export class AgentSdkService {
       };
 
       const q = await tryQuery();
+      this.currentQuery = q;
 
       // Track tool_use blocks by stream index so parallel tool calls keep
       // their input_json_delta fragments separate.
@@ -407,7 +469,14 @@ export class AgentSdkService {
             continue;
         }
       }
+      if (this.stopped) {
+        yield { type: 'stopped' };
+      }
     } catch (error: any) {
+      if (this.stopped) {
+        yield { type: 'stopped' };
+        return;
+      }
       process.stderr.write(`[sandbox] agent SDK error: ${error.message}\n`);
       throw error;
     }

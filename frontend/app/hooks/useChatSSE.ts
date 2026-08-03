@@ -256,6 +256,14 @@ export function useChatSSE(opts?: {
               updateLastAssistant((msg) => ({ ...msg, content: fullContent, thinkingChain: fullThinking }));
               break;
 
+            case 'stopped': {
+              const stopText = data.content || '已停止本轮生成';
+              fullContent += `\n\n${stopText}`;
+              pushEvent({ type: 'status', content: stopText, subtype: 'stopped' });
+              updateLastAssistant((msg) => ({ ...msg, content: fullContent, thinkingChain: fullThinking }));
+              break;
+            }
+
             case 'error':
               throw new Error(data.message || 'SSE error');
           }
@@ -293,5 +301,19 @@ export function useChatSSE(opts?: {
     }, 'attach');
   }, [connectRun, isStreaming]);
 
-  return { messages, isStreaming, sendMessage, attach, conversationId, setMessages };
+  const stop = useCallback(async () => {
+    abortRef.current?.abort();
+    if (!conversationId) return;
+    try {
+      await fetch('http://localhost:3001/agent/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId }),
+      });
+    } catch {
+      // the local SSE stream is already aborted
+    }
+  }, [conversationId]);
+
+  return { messages, isStreaming, sendMessage, attach, stop, conversationId, setMessages };
 }

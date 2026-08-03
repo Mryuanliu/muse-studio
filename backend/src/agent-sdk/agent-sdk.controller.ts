@@ -23,6 +23,15 @@ export class AgentSdkController {
     return this.agentRun.status(conversationId);
   }
 
+  @Post('stop')
+  @HttpCode(200)
+  async stop(@Body() body: { conversationId?: string }) {
+    if (!body.conversationId) {
+      return { error: 'conversationId is required' };
+    }
+    return this.agentRun.stop(body.conversationId);
+  }
+
   @Post('run')
   @HttpCode(200)
   @Header('Content-Type', 'text/event-stream')

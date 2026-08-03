@@ -1,6 +1,6 @@
 export interface AgentChunk {
   type: 'session' | 'thinking' | 'text' | 'tool_start' | 'tool_update' | 'tool_end'
-       | 'tool_progress' | 'status' | 'command_output' | 'done'
+       | 'tool_progress' | 'status' | 'command_output' | 'done' | 'stopped'
        | 'skill_load' | 'skill_invoke' | 'mcp_status' | 'mcp_call';
   sessionId?: string;
   content?: string;
@@ -25,4 +25,6 @@ export interface SandboxConfig {
   enabledMcps: string[];
   proxyUrl?: string;
   previewTaskId?: string;
+  conversationId?: string;
+  backendUrl?: string;
 }

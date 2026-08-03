@@ -4,10 +4,12 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { io } from 'socket.io-client';
+import { Button } from 'antd';
 import { Bubble, Sender } from '@ant-design/x';
 import { useChatSSE, ChatMessage } from '../../hooks/useChatSSE';
 import ChatMessageComponent from '../../components/ChatMessage';
 import PreviewPanel from '../../components/PreviewPanel';
+import AskUserCard, { AskUserCardData } from '../../components/AskUserCard';
 
 function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initialRunStatus }: {
   convId?: string;
@@ -16,7 +18,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   initialOutputFiles?: string[];
   initialRunStatus?: string;
 }) {
-  const { messages, isStreaming, sendMessage, attach, conversationId } = useChatSSE({
+  const { messages, isStreaming, sendMessage, attach, stop, conversationId } = useChatSSE({
     initialMessages: initialMsgs,
     initialConversationId: convId,
     initialSdkSessionId: sdkSessionId,
@@ -25,6 +27,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   const [previewHtml, setPreviewHtml] = useState<string | undefined>();
   const [previewStatus, setPreviewStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
+  const [askCards, setAskCards] = useState<AskUserCardData[]>([]);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const attachRef = React.useRef<string | null>(null);
   const previewSocketRef = React.useRef<ReturnType<typeof io> | null>(null);
@@ -50,7 +53,16 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
         setPreviewStatus('loading');
       }
     };
+    const onAskUser = (data: any) => {
+      setAskCards((prev) => {
+        if (!data?.requestId || prev.some((card) => card.requestId === data.requestId)) {
+          return prev;
+        }
+        return [...prev, { ...data, status: 'pending' }];
+      });
+    };
     socket.on('preview', onPreview);
+    socket.on('ask_user', onAskUser);
 
     if (joinedRoomRef.current && joinedRoomRef.current !== activeConvId) {
       socket.emit('preview:leave', { conversationIds: [joinedRoomRef.current] });
@@ -63,6 +75,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
 
     return () => {
       socket.off('preview', onPreview);
+      socket.off('ask_user', onAskUser);
     };
   }, [conversationId, convId]);
 
@@ -148,18 +161,45 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
     sendMessage(text);
   };
 
-  const bubbleItems = messages.map((msg, i) => ({
-    key: `${msg.role}-${i}`,
-    role: msg.role === 'user' ? 'user' : 'ai',
-    content: msg.role === 'user'
-      ? msg.content
-      : (
-        <ChatMessageComponent
-          message={msg}
-          isStreaming={isStreaming && i === messages.length - 1}
-        />
-      ),
-  }));
+  const handleAskUserSubmit = async (payload: {
+    requestId: string;
+    answers: Record<string, string>;
+  }) => {
+    const res = await fetch('http://localhost:3001/agent/ask-user/answer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error?.error || '回答提交失败');
+    }
+    setAskCards((prev) => prev.map((card) =>
+      card.requestId === payload.requestId
+        ? { ...card, status: 'submitted', submittedAnswers: payload.answers }
+        : card,
+    ));
+  };
+
+  const bubbleItems = [
+    ...messages.map((msg, i) => ({
+      key: `${msg.role}-${i}`,
+      role: msg.role === 'user' ? 'user' : 'ai',
+      content: msg.role === 'user'
+        ? msg.content
+        : (
+          <ChatMessageComponent
+            message={msg}
+            isStreaming={isStreaming && i === messages.length - 1}
+          />
+        ),
+    })),
+    ...askCards.map((card) => ({
+      key: `ask-${card.requestId}`,
+      role: 'ai',
+      content: <AskUserCard card={card} onSubmit={handleAskUserSubmit} />,
+    })),
+  ];
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -170,9 +210,20 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
           <Link href="/tasks" className="text-xs text-gray-500 hover:text-gray-700 transition-colors">
             ← 返回列表
           </Link>
-          <span className="text-xs text-gray-500">
-            {isStreaming ? '生成中...' : '就绪'}
-          </span>
+          <div className="flex items-center gap-2">
+            {isStreaming && (
+              <Button
+                size="small"
+                danger
+                onClick={() => void stop()}
+              >
+                停止
+              </Button>
+            )}
+            <span className="text-xs text-gray-500">
+              {isStreaming ? '生成中...' : '就绪'}
+            </span>
+          </div>
         </div>
 
         {/* Messages */}
