@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'AI 工作区',
-  description: '使用 AI 创建和编辑项目',
+  title: 'Muse Studio',
+  description: 'AI 前端与多智能体工作区',
 };
 
 export default function RootLayout({

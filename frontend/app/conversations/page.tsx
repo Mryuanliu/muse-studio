@@ -128,7 +128,7 @@ function ConversationsContent() {
   return <AdminShell>
     <div className="conversation-shell">
       <header className="conversation-header">
-        <div className="conversation-brand"><Avatar size={40} icon={<RobotOutlined />} className="chat-avatar chat-avatar-ai" /><div><div className="conversation-title">Muse AI</div><div className="conversation-subtitle">AI 工作空间</div></div></div>
+        <div className="conversation-brand"><Avatar size={40} icon={<RobotOutlined />} className="chat-avatar chat-avatar-ai" /><div><div className="conversation-title">Muse Studio</div><div className="conversation-subtitle">AI 前端与多智能体工作区</div></div></div>
         <div className="conversation-agent-picker"><span>当前智能体</span><Select className="conversation-agent-select" value={agentId} disabled={Boolean(conversationId) || submitting} onChange={setAgentId} options={agents.map((item) => ({ value: item.id, label: `${item.name} · ${item.type === 'codegen' ? '生码' : '其他'}` }))} placeholder="请选择智能体" />{selectedAgent?.description && <span className="conversation-agent-description">{selectedAgent.description}</span>}</div>
       </header>
       <footer className="conversation-composer-wrap">

@@ -27,8 +27,8 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
 
   return (
     <ProLayout
-      title="AI 工作区"
-      logo={<span className="text-lg font-bold text-blue-600">AI</span>}
+      title="Muse Studio"
+      logo={<span className="text-lg font-bold text-blue-600">M</span>}
       route={route}
       location={{ pathname }}
       layout="mix"

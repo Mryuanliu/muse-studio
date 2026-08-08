@@ -52,7 +52,7 @@ export default function ChatPanel({ onPreviewHtml }: Props) {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex-shrink-0 px-4 py-3 border-b border-white/10">
-        <h1 className="text-lg font-semibold text-white">AI 工作区</h1>
+        <h1 className="text-lg font-semibold text-white">Muse Studio</h1>
         <p className="text-xs text-gray-500 mt-0.5">
           描述目标，AI 将创建对应的项目内容
         </p>

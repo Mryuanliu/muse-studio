@@ -11,7 +11,7 @@ NC='\033[0m'
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo -e "${BLUE}╔══════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║    AI 工作区 — 启动脚本                  ║${NC}"
+echo -e "${BLUE}║    Muse Studio — 启动脚本               ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════╝${NC}"
 echo ""
 
