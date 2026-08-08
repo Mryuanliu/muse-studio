@@ -210,6 +210,7 @@ interface ToolGroup {
   input?: unknown;
   output?: unknown;
   status?: string;
+  failed?: boolean;
   completed: boolean;
   lastIndex: number;
 }
@@ -339,6 +340,10 @@ function groupToolEvents(events: EventLog[], isStreaming: boolean): DisplayEvent
     if (ev.toolResult !== undefined) group.output = ev.toolResult;
     if (ev.output !== undefined) group.output = ev.output;
     if (ev.status || ev.subtype) group.status = ev.status || ev.subtype;
+    if (isFailedToolOutput(ev.output)) {
+      group.failed = true;
+      group.status = 'error';
+    }
     if (ev.type === 'tool_end' || ev.status === 'result' || /^(done|completed|success)$/i.test(ev.status || '')) {
       group.completed = true;
     }
@@ -371,6 +376,12 @@ function toolTitle(group: ToolGroup) {
   return toolName(group.name);
 }
 
+function isFailedToolOutput(output: unknown): boolean {
+  if (!output || typeof output !== 'object') return false;
+  const value = output as Record<string, unknown>;
+  return value.isError === true || value.is_error === true;
+}
+
 function toolSummary(group: ToolGroup) {
   const summary = group.kind === 'tool'
     ? formatToolInput(group.name, group.input)
@@ -382,8 +393,8 @@ function toolSummary(group: ToolGroup) {
 function ToolCallPanel({ group, isStreaming }: { group: ToolGroup; isStreaming: boolean }) {
   const [activeKey, setActiveKey] = useState<string[]>([]);
   const running = !group.completed;
-  const status = running ? '执行中' : '已完成';
-  const statusClass = running ? 'tool-status-running' : 'tool-status-done';
+  const status = group.failed ? '调用失败' : running ? '执行中' : '已完成';
+  const statusClass = group.failed ? 'tool-status-error' : running ? 'tool-status-running' : 'tool-status-done';
   const inputText = stringify(group.input);
   const outputText = stringify(group.output);
 
@@ -405,7 +416,7 @@ function ToolCallPanel({ group, isStreaming }: { group: ToolGroup; isStreaming: 
             <span className="tool-call-title">{toolTitle(group)}</span>
             <span className="tool-call-summary" title={toolSummary(group)}>{toolSummary(group)}</span>
             <span className={`tool-call-status ${statusClass}`}>
-              {running ? <LoadingOutlined spin /> : <CheckCircleOutlined />}
+              {group.failed ? <QuestionCircleOutlined /> : running ? <LoadingOutlined spin /> : <CheckCircleOutlined />}
               {status}
             </span>
           </div>

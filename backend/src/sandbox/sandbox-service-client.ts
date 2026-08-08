@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import * as path from 'path';
 import type { AgentChunk, ChatAttachment, SandboxConfig } from './sandbox-types';
-import { PlatformService } from '../platform/platform.service';
+import { McpRuntimeServer, PlatformService } from '../platform/platform.service';
 
 export interface AgentRuntimeConfig {
   agentId?: string;
@@ -10,7 +10,7 @@ export interface AgentRuntimeConfig {
   systemPrompt?: string;
   enabledSkills: string[];
   enabledMcps: string[];
-  mcpServers?: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
+  mcpServers?: Record<string, McpRuntimeServer>;
 }
 
 @Injectable()

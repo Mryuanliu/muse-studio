@@ -292,7 +292,7 @@ export function useChatSSE(opts?: {
               break;
 
             case 'mcp_call':
-              pushEvent({ type: 'mcp_call', serverName: data.serverName, toolName: data.toolName, toolId: data.toolId, status: data.status, input: data.input });
+              pushEvent({ type: 'mcp_call', serverName: data.serverName, toolName: data.toolName, toolId: data.toolId, status: data.status, input: data.input, output: data.output });
               break;
 
             case 'status':
@@ -393,5 +393,5 @@ export function useChatSSE(opts?: {
     }
   }, [conversationId]);
 
-  return { messages, isStreaming, sendMessage, attach, stop, conversationId, setConversationId, setMessages };
+  return { messages, isStreaming, sendMessage, attach, stop, conversationId, sdkSessionId, setConversationId, setMessages };
 }

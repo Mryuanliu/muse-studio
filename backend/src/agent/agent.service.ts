@@ -11,6 +11,7 @@ function parseList(value: string | undefined): string[] {
 
 export interface AgentView {
   id: string;
+  code: string;
   name: string;
   description: string;
   prompt: string;
@@ -36,18 +37,20 @@ export class AgentService {
 
   async findOne(id: string): Promise<AgentView> { return this.toView(await this.findEntity(id)); }
 
-  async create(input: { name?: string; description?: string; prompt?: string; type?: AgentType; skillGroupId?: string; mcpNames?: string[] }): Promise<AgentView> {
+  async create(input: { name?: string; code?: string; description?: string; prompt?: string; type?: AgentType; skillGroupId?: string; mcpNames?: string[] }): Promise<AgentView> {
     const name = input.name?.trim();
     if (!name) throw new BadRequestException('智能体名称不能为空');
     if (await this.repo.findOne({ where: { name } })) throw new BadRequestException('智能体名称已存在');
+    const code = await this.resolveCode(input.code, name);
     const type = input.type === 'other' ? 'other' : 'codegen';
     await this.validateBindings(input.skillGroupId, input.mcpNames || []);
-    const saved = await this.repo.save(this.repo.create({ name, description: input.description || '', prompt: input.prompt || '', type, skillGroupId: input.skillGroupId || null as any, mcpNames: JSON.stringify(input.mcpNames || []) }));
+    const saved = await this.repo.save(this.repo.create({ code, name, description: input.description || '', prompt: input.prompt || '', type, skillGroupId: input.skillGroupId || null as any, mcpNames: JSON.stringify(input.mcpNames || []) }));
     return this.toView(saved);
   }
 
-  async update(id: string, input: Partial<{ name: string; description: string; prompt: string; type: AgentType; skillGroupId: string | null; mcpNames: string[] }>): Promise<AgentView> {
+  async update(id: string, input: Partial<{ code: string; name: string; description: string; prompt: string; type: AgentType; skillGroupId: string | null; mcpNames: string[] }>): Promise<AgentView> {
     const agent = await this.findEntity(id);
+    if (input.code !== undefined) agent.code = await this.resolveCode(input.code, input.name || agent.name, agent.id);
     if (input.name !== undefined && input.name.trim() !== agent.name && await this.repo.findOne({ where: { name: input.name.trim() } })) throw new BadRequestException('智能体名称已存在');
     await this.validateBindings(input.skillGroupId === undefined ? agent.skillGroupId : input.skillGroupId || undefined, input.mcpNames || parseList(agent.mcpNames));
     if (input.name !== undefined) agent.name = input.name.trim();
@@ -70,14 +73,36 @@ export class AgentService {
     const agent = await this.findEntity(id);
     const group = agent.skillGroupId ? await this.platform.getGroup(agent.skillGroupId).catch(() => undefined) : undefined;
     const skillNames = group?.skillNames || [];
-    const mcpNames = [...new Set([...(group?.mcpNames || []), ...parseList(agent.mcpNames)])];
+    const mcpNames = [...new Set(parseList(agent.mcpNames))];
     const resources = await this.platform.getRuntimeResources(skillNames, mcpNames);
     return { agentId: agent.id, agentName: agent.name, agentType: agent.type, systemPrompt: agent.prompt, enabledSkills: resources.skills, enabledMcps: resources.mcps, mcpServers: await this.platform.runtimeMcpServers(resources.mcps) };
   }
 
+  async findByCode(code: string): Promise<AgentView> {
+    const value = code.trim();
+    const agent = await this.repo.findOne({ where: [{ code: value }, { id: value }] });
+    if (!agent) throw new NotFoundException(`Agent ${value} not found`);
+    return this.toView(agent);
+  }
+
   private async toView(agent: Agent): Promise<AgentView> {
     const skillGroup = agent.skillGroupId ? await this.platform.getGroup(agent.skillGroupId).catch(() => undefined) : undefined;
-    return { ...agent, skillGroupId: agent.skillGroupId || undefined, skillGroup, mcpNames: parseList(agent.mcpNames) };
+    return { ...agent, code: agent.code || agent.id, skillGroupId: agent.skillGroupId || undefined, skillGroup, mcpNames: parseList(agent.mcpNames) };
+  }
+
+  private async resolveCode(input: string | undefined, name: string, excludeId?: string): Promise<string> {
+    const base = (input?.trim() || name.trim())
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || `agent-${Date.now()}`;
+    let code = base;
+    let suffix = 2;
+    while (true) {
+      const existing = await this.repo.findOne({ where: { code } });
+      if (!existing || existing.id === excludeId) return code;
+      if (input?.trim()) throw new BadRequestException('智能体 code 已存在');
+      code = `${base}-${suffix++}`;
+    }
   }
 
   private async findEntity(id: string): Promise<Agent> { const agent = await this.repo.findOne({ where: { id } }); if (!agent) throw new NotFoundException(`Agent ${id} not found`); return agent; }

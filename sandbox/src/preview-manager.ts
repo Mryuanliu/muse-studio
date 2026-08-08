@@ -53,10 +53,31 @@ function isPortFree(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const srv = net.createServer();
     srv.once('error', () => resolve(false));
-    srv.listen(port, '127.0.0.1', () => {
+    // Bind the unspecified address so IPv4 and IPv6 listeners are both
+    // detected before the child process tries to bind its actual port.
+    srv.listen(port, () => {
       srv.close(() => resolve(true));
     });
   });
+}
+
+function replacePortArgs(args: string[], port: number): string[] {
+  const next = [...args];
+  for (let index = 0; index < next.length; index += 1) {
+    if (next[index] === '--port' || next[index] === '-p') {
+      if (index + 1 < next.length) next[index + 1] = String(port);
+      return next;
+    }
+    if (next[index].startsWith('--port=')) {
+      next[index] = `--port=${port}`;
+      return next;
+    }
+  }
+  return next;
+}
+
+function isAddressInUse(output: string): boolean {
+  return /EADDRINUSE|address already in use/i.test(output);
 }
 
 async function waitHealthy(url: string, timeoutMs = 15000): Promise<{ ok: boolean; status: number }> {
@@ -109,68 +130,85 @@ export class PreviewManager {
 
     const registry = readRegistry(this.registryFile);
     const record = registry.records[key];
-    const finalPort = await this.nextPort(requestedPort || record?.port, registry);
+    const preferredPort = requestedPort || record?.port;
     let resolvedCommand = command;
     let resolvedArgs = args;
     if (command === 'npm' && args[0] === 'run' && args[1] === 'dev') {
       resolvedCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
       resolvedArgs = ['next', 'dev', ...args.slice(2)];
     }
-    const finalArgs = resolvedArgs.includes('--port')
-      ? resolvedArgs
-      : resolvedCommand === 'npm'
-        ? [...resolvedArgs, '--', '--port', String(finalPort)]
-        : [...resolvedArgs, '--port', String(finalPort)];
-    const child = spawn(resolvedCommand, finalArgs, {
-      cwd: project,
-      env: {
-        ...process.env,
-        PORT: String(finalPort),
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }) as unknown as ChildProcessWithoutNullStreams;
+    let nextRequestedPort = preferredPort;
+    let lastOutput = '';
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const finalPort = await this.nextPort(nextRequestedPort, registry);
+      nextRequestedPort = undefined;
+      const finalArgs = resolvedArgs.some((arg) => arg === '--port' || arg === '-p' || arg.startsWith('--port='))
+        ? replacePortArgs(resolvedArgs, finalPort)
+        : resolvedCommand === 'npm'
+          ? [...resolvedArgs, '--', '--port', String(finalPort)]
+          : [...resolvedArgs, '--port', String(finalPort)];
+      const child = spawn(resolvedCommand, finalArgs, {
+        cwd: project,
+        env: {
+          ...process.env,
+          PORT: String(finalPort),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }) as unknown as ChildProcessWithoutNullStreams;
 
-    let output = '';
-    child.stdout.on('data', (buf) => {
-      output = `${output}${buf.toString()}`.slice(-20000);
-    });
-    child.stderr.on('data', (buf) => {
-      output = `${output}${buf.toString()}`.slice(-20000);
-    });
-    child.on('exit', () => {
+      let output = '';
+      child.stdout.on('data', (buf) => {
+        output = `${output}${buf.toString()}`.slice(-20000);
+      });
+      child.stderr.on('data', (buf) => {
+        output = `${output}${buf.toString()}`.slice(-20000);
+      });
+      child.on('exit', () => {
+        const current = this.running.get(key);
+        if (current?.child !== child) return;
+        this.running.delete(key);
+        this.updateRecord(key, { status: 'stopped', port: undefined, pid: undefined, url: undefined });
+      });
+
+      this.running.set(key, { pid: child.pid ?? 0, port: finalPort, project, child, output });
+      this.updateRecord(key, {
+        taskId,
+        projectPath: project,
+        command: resolvedCommand,
+        args: finalArgs,
+        port: finalPort,
+        pid: child.pid ?? 0,
+        status: 'running',
+        url: `http://localhost:${finalPort}`,
+      });
+
+      const url = `http://localhost:${finalPort}`;
+      const health = await waitHealthy(url);
+      lastOutput = output;
+      if (child.exitCode === null && health.ok) {
+        return {
+          taskId,
+          running: true,
+          pid: child.pid ?? 0,
+          port: finalPort,
+          url,
+          healthy: true,
+          output: output.slice(-1000),
+        };
+      }
+
       this.running.delete(key);
-      this.updateRecord(key, { status: 'stopped', port: undefined, pid: undefined, url: undefined });
-    });
-
-    this.running.set(key, { pid: child.pid ?? 0, port: finalPort, project, child, output });
-    this.updateRecord(key, {
-      taskId,
-      projectPath: project,
-      command: resolvedCommand,
-      args: finalArgs,
-      port: finalPort,
-      pid: child.pid ?? 0,
-      status: 'running',
-      url: `http://localhost:${finalPort}`,
-    });
-
-    const url = `http://localhost:${finalPort}`;
-    const health = await waitHealthy(url);
-    if (!health.ok && child.exitCode !== null) {
-      this.running.delete(key);
-      this.updateRecord(key, { status: 'failed', port: undefined, pid: undefined, url: undefined });
-      throw new Error(`Dev server exited early:\n${output}`);
+      if (child.exitCode === null) child.kill('SIGTERM');
+      if (!isAddressInUse(output)) {
+        this.updateRecord(key, { status: 'failed', port: undefined, pid: undefined, url: undefined });
+        throw new Error(`Dev server failed to become healthy:\n${output}`);
+      }
+      // A process can claim the port between the probe and spawn. Retry with
+      // the next free port instead of exposing the transient EADDRINUSE.
     }
 
-    return {
-      taskId,
-      running: true,
-      pid: child.pid ?? 0,
-      port: finalPort,
-      url,
-      healthy: health.ok,
-      output: output.slice(-1000),
-    };
+    this.updateRecord(key, { status: 'failed', port: undefined, pid: undefined, url: undefined });
+    throw new Error(`Dev server could not acquire a free port:\n${lastOutput}`);
   }
 
   async restart(taskIdOrProject: string): Promise<any> {

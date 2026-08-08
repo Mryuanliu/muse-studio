@@ -144,6 +144,20 @@ export class AgentSdkService {
     const servers: Record<string, any> = {};
     for (const name of this.config.enabledMcps || []) {
       const definition = this.config.mcpServers?.[name];
+      if (definition?.type === 'http') {
+        const bridge = path.join(this.config.mcpDir, 'remote-http-bridge.mjs');
+        servers[name] = {
+          command: 'node',
+          args: [bridge],
+          env: {
+            ...(definition.env || {}),
+            MUSE_REMOTE_MCP_URL: definition.url,
+            MUSE_REMOTE_MCP_HEADERS: JSON.stringify(definition.headers || {}),
+            MUSE_REMOTE_MCP_TIMEOUT: String(definition.timeout || 30000),
+          },
+        };
+        continue;
+      }
       const args = definition?.args?.length ? definition.args.map((arg) => arg === `${name}-server.mjs` ? path.join(this.config.mcpDir, arg) : arg) : [path.join(this.config.mcpDir, `${name}-server.mjs`)];
       servers[name] = {
         command: definition?.command || 'node',

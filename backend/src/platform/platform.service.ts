@@ -6,10 +6,13 @@ import { Repository } from 'typeorm';
 import { Skill } from './entities/skill.entity';
 import { McpServer } from './entities/mcp-server.entity';
 import { SkillGroup } from './entities/skill-group.entity';
+import { McpInstallerService } from './mcp-installer.service';
 
 export interface SkillInfo { id?: string; name: string; description: string; path: string; enabled: boolean; builtin?: boolean; }
-export interface McpServerInfo { id?: string; name: string; description: string; status: string; enabled: boolean; tools: string[]; builtin?: boolean; command?: string; args?: string[]; env?: Record<string, string>; serverScript?: string; }
-export interface SkillGroupInfo { id: string; name: string; description: string; skillNames: string[]; mcpNames: string[]; createdAt: Date; updatedAt: Date; }
+export type McpSourceType = 'builtin' | 'script' | 'npm' | 'remote';
+export interface McpRuntimeServer { type?: 'stdio' | 'http'; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string>; timeout?: number; }
+export interface McpServerInfo { id?: string; name: string; description: string; status: string; enabled: boolean; tools: string[]; builtin?: boolean; sourceType: McpSourceType; transport: 'stdio' | 'http'; command?: string; args?: string[]; env?: Record<string, string>; headers?: Record<string, string>; url?: string; packageName?: string; packageVersion?: string; installDir?: string; entrypoint?: string; installStatus: string; installLog?: string; timeout: number; serverScript?: string; }
+export interface SkillGroupInfo { id: string; name: string; description: string; skillNames: string[]; createdAt: Date; updatedAt: Date; }
 
 function parseJson<T>(value: string | undefined, fallback: T): T {
   try { return value ? JSON.parse(value) as T : fallback; } catch { return fallback; }
@@ -26,6 +29,7 @@ export class PlatformService {
     @InjectRepository(Skill) private readonly skillRepo: Repository<Skill>,
     @InjectRepository(McpServer) private readonly mcpRepo: Repository<McpServer>,
     @InjectRepository(SkillGroup) private readonly groupRepo: Repository<SkillGroup>,
+    private readonly installer: McpInstallerService,
   ) {}
 
   private readSkillMeta(skillPath: string): { name?: string; description?: string } {
@@ -104,32 +108,40 @@ export class PlatformService {
 
   async listMcps(): Promise<McpServerInfo[]> {
     await this.syncBuiltinMcps();
-    return (await this.mcpRepo.find({ order: { name: 'ASC' } })).map((item) => ({
-      ...item, tools: parseJson(item.tools, []), args: parseJson(item.args, []), env: parseJson(item.env, {}),
-    }));
+    return (await this.mcpRepo.find({ order: { name: 'ASC' } })).map((item) => this.serializeMcp(item));
   }
 
   async getMcp(name: string): Promise<McpServerInfo> { return this.findMcp(name); }
 
-  async createMcp(input: { name?: string; description?: string; tools?: string[]; command?: string; args?: string[]; env?: Record<string, string>; serverScript?: string }): Promise<McpServerInfo> {
+  async createMcp(input: { name?: string; description?: string; sourceType?: McpSourceType; transport?: 'stdio' | 'http'; tools?: string[]; command?: string; args?: string[]; env?: Record<string, string>; headers?: Record<string, string>; url?: string; packageName?: string; packageVersion?: string; serverScript?: string; timeout?: number }): Promise<McpServerInfo> {
     const name = this.safeName(input.name);
     if (await this.mcpRepo.findOne({ where: { name } })) throw new BadRequestException('MCP 名称已存在');
-    if (!input.serverScript?.trim()) throw new BadRequestException('自定义 MCP 需要提供 serverScript');
-    const serverPath = path.join(this.mcpRoot, `${name}-server.mjs`);
-    this.assertInside(this.mcpRoot, serverPath);
-    fs.writeFileSync(serverPath, input.serverScript);
-    const saved = await this.mcpRepo.save(this.mcpRepo.create({ name, description: input.description || '', tools: JSON.stringify(input.tools || []), command: input.command || 'node', args: JSON.stringify(input.args || [`${name}-server.mjs`]), env: JSON.stringify(input.env || {}), serverScript: input.serverScript, enabled: true, builtin: false }));
+    const sourceType = input.sourceType || (input.transport === 'http' ? 'remote' : 'script');
+    this.validateMcpInput(sourceType, input);
+    const serverPath = sourceType === 'script' ? path.join(this.mcpRoot, `${name}-server.mjs`) : undefined;
+    if (serverPath) { this.assertInside(this.mcpRoot, serverPath); fs.writeFileSync(serverPath, input.serverScript!); }
+    let saved = await this.mcpRepo.save(this.mcpRepo.create({ name, description: input.description || '', sourceType, transport: sourceType === 'remote' ? 'http' : 'stdio', tools: JSON.stringify(input.tools || []), command: input.command || 'node', args: JSON.stringify(input.args || (serverPath ? [`${name}-server.mjs`] : [])), env: JSON.stringify(input.env || {}), headers: JSON.stringify(input.headers || {}), url: input.url, packageName: input.packageName, packageVersion: input.packageVersion, timeout: input.timeout || 30000, serverScript: input.serverScript, installStatus: sourceType === 'npm' ? 'installing' : 'none', enabled: true, builtin: false }));
+    if (sourceType === 'npm') saved = await this.installNpmEntity(saved);
     return this.serializeMcp(saved);
   }
 
-  async updateMcp(name: string, input: Partial<{ description: string; tools: string[]; command: string; args: string[]; env: Record<string, string>; serverScript: string }>): Promise<McpServerInfo> {
-    const mcp = await this.findMcpEntity(name);
-    if (input.serverScript !== undefined) { mcp.serverScript = input.serverScript; fs.writeFileSync(path.join(this.mcpRoot, `${name}-server.mjs`), input.serverScript); }
+  async updateMcp(name: string, input: Partial<{ description: string; sourceType: McpSourceType; transport: 'stdio' | 'http'; tools: string[]; command: string; args: string[]; env: Record<string, string>; headers: Record<string, string>; url: string; packageName: string; packageVersion: string; serverScript: string; timeout: number }>): Promise<McpServerInfo> {
+    let mcp = await this.findMcpEntity(name);
+    const nextSource = input.sourceType || mcp.sourceType;
+    this.validateMcpInput(nextSource, { ...mcp, ...input, headers: input.headers || parseJson(mcp.headers, {}), url: input.url || mcp.url, packageName: input.packageName || mcp.packageName, packageVersion: input.packageVersion || mcp.packageVersion, serverScript: input.serverScript || mcp.serverScript });
+    if (input.serverScript !== undefined && nextSource === 'script') { mcp.serverScript = input.serverScript; fs.writeFileSync(path.join(this.mcpRoot, `${name}-server.mjs`), input.serverScript); }
     if (input.description !== undefined) mcp.description = input.description;
+    if (input.sourceType !== undefined) { mcp.sourceType = input.sourceType; mcp.transport = input.sourceType === 'remote' ? 'http' : 'stdio'; }
     if (input.tools !== undefined) mcp.tools = JSON.stringify(input.tools);
     if (input.command !== undefined) mcp.command = input.command;
     if (input.args !== undefined) mcp.args = JSON.stringify(input.args);
     if (input.env !== undefined) mcp.env = JSON.stringify(input.env);
+    if (input.headers !== undefined) mcp.headers = JSON.stringify(input.headers);
+    if (input.url !== undefined) mcp.url = input.url;
+    if (input.packageName !== undefined) mcp.packageName = input.packageName;
+    if (input.packageVersion !== undefined) mcp.packageVersion = input.packageVersion;
+    if (input.timeout !== undefined) mcp.timeout = input.timeout;
+    if (nextSource === 'npm' && (input.packageName !== undefined || input.packageVersion !== undefined)) mcp = await this.installNpmEntity(mcp);
     return this.serializeMcp(await this.mcpRepo.save(mcp));
   }
 
@@ -148,6 +160,12 @@ export class PlatformService {
     return { name, enabled: mcp.enabled };
   }
 
+  async installMcp(name: string): Promise<McpServerInfo> {
+    const mcp = await this.findMcpEntity(name);
+    if (mcp.sourceType !== 'npm') throw new BadRequestException('只有 npm MCP 需要安装');
+    return this.serializeMcp(await this.installNpmEntity(mcp));
+  }
+
   async listGroups(): Promise<SkillGroupInfo[]> {
     await this.syncDiskSkills(); await this.syncBuiltinMcps();
     return (await this.groupRepo.find({ order: { name: 'ASC' } })).map((group) => this.serializeGroup(group));
@@ -155,20 +173,19 @@ export class PlatformService {
 
   async getGroup(id: string): Promise<SkillGroupInfo> { return this.serializeGroup(await this.findGroupEntity(id)); }
 
-  async createGroup(input: { name?: string; description?: string; skillNames?: string[]; mcpNames?: string[] }): Promise<SkillGroupInfo> {
+  async createGroup(input: { name?: string; description?: string; skillNames?: string[] }): Promise<SkillGroupInfo> {
     const name = input.name?.trim(); if (!name) throw new BadRequestException('分组名称不能为空');
     if (await this.groupRepo.findOne({ where: { name } })) throw new BadRequestException('Skill 分组名称已存在');
-    await this.validateNames(input.skillNames || [], input.mcpNames || []);
-    return this.serializeGroup(await this.groupRepo.save(this.groupRepo.create({ name, description: input.description || '', skillNames: JSON.stringify(input.skillNames || []), mcpNames: JSON.stringify(input.mcpNames || []) })));
+    await this.validateSkillNames(input.skillNames || []);
+    return this.serializeGroup(await this.groupRepo.save(this.groupRepo.create({ name, description: input.description || '', skillNames: JSON.stringify(input.skillNames || []) })));
   }
 
-  async updateGroup(id: string, input: Partial<{ name: string; description: string; skillNames: string[]; mcpNames: string[] }>): Promise<SkillGroupInfo> {
+  async updateGroup(id: string, input: Partial<{ name: string; description: string; skillNames: string[] }>): Promise<SkillGroupInfo> {
     const group = await this.findGroupEntity(id);
-    if (input.skillNames || input.mcpNames) await this.validateNames(input.skillNames || parseJson(group.skillNames, []), input.mcpNames || parseJson(group.mcpNames, []));
+    if (input.skillNames) await this.validateSkillNames(input.skillNames);
     if (input.name !== undefined) group.name = input.name.trim();
     if (input.description !== undefined) group.description = input.description;
     if (input.skillNames !== undefined) group.skillNames = JSON.stringify(input.skillNames);
-    if (input.mcpNames !== undefined) group.mcpNames = JSON.stringify(input.mcpNames);
     return this.serializeGroup(await this.groupRepo.save(group));
   }
 
@@ -184,11 +201,16 @@ export class PlatformService {
   async enabledSkills(): Promise<string[]> { return (await this.listSkills()).filter((item) => item.enabled).map((item) => item.name); }
   async enabledMcps(): Promise<McpServerInfo[]> { return (await this.listMcps()).filter((item) => item.enabled); }
 
-  async runtimeMcpServers(names: string[]): Promise<Record<string, { command: string; args: string[]; env?: Record<string, string> }>> {
-    const servers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
+  async runtimeMcpServers(names: string[]): Promise<Record<string, McpRuntimeServer>> {
+    const servers: Record<string, McpRuntimeServer> = {};
     for (const server of await this.listMcps()) {
       if (!names.includes(server.name) || !server.enabled) continue;
-      servers[server.name] = { command: server.command || 'node', args: server.args || [`${server.name}-server.mjs`], env: server.env || {} };
+      if (server.sourceType === 'npm' && server.installStatus !== 'ready') continue;
+      if (server.transport === 'http') {
+        servers[server.name] = { type: 'http', url: server.url!, headers: server.headers || {}, timeout: server.timeout || 30000 };
+      } else {
+        servers[server.name] = { type: 'stdio', command: server.command || 'node', args: server.args || [`${server.name}-server.mjs`], env: server.env || {} };
+      }
     }
     return servers;
   }
@@ -197,9 +219,52 @@ export class PlatformService {
   private async findMcpEntity(name: string): Promise<McpServer> { await this.syncBuiltinMcps(); const item = await this.mcpRepo.findOne({ where: { name } }); if (!item) throw new NotFoundException(`MCP server ${name} not found`); return item; }
   private async findMcp(name: string): Promise<McpServerInfo> { return this.serializeMcp(await this.findMcpEntity(name)); }
   private async findGroupEntity(id: string): Promise<SkillGroup> { const item = await this.groupRepo.findOne({ where: { id } }); if (!item) throw new NotFoundException(`Skill group ${id} not found`); return item; }
-  private serializeGroup(group: SkillGroup): SkillGroupInfo { return { ...group, skillNames: parseJson(group.skillNames, []), mcpNames: parseJson(group.mcpNames, []) }; }
-  private serializeMcp(item: McpServer): McpServerInfo { return { ...item, tools: parseJson(item.tools, []), args: parseJson(item.args, []), env: parseJson(item.env, {}) }; }
-  private async validateNames(skillNames: string[], mcpNames: string[]): Promise<void> { const skills = await this.listSkills(); const mcps = await this.listMcps(); if (skillNames.some((name) => !skills.some((item) => item.name === name))) throw new BadRequestException('包含不存在的 Skill'); if (mcpNames.some((name) => !mcps.some((item) => item.name === name))) throw new BadRequestException('包含不存在的 MCP'); }
+  private serializeGroup(group: SkillGroup): SkillGroupInfo { return { ...group, skillNames: parseJson(group.skillNames, []) }; }
+  private serializeMcp(item: McpServer): McpServerInfo { return { ...item, tools: parseJson(item.tools, []), args: parseJson(item.args, []), env: parseJson(item.env, {}), headers: parseJson(item.headers, {}) }; }
+  private validateMcpInput(sourceType: McpSourceType, input: any): void {
+    if (sourceType === 'remote') {
+      if (input.transport && input.transport !== 'http') throw new BadRequestException('远程 MCP 只支持 Streamable HTTP');
+      if (!input.url || !this.isSafeRemoteUrl(input.url)) throw new BadRequestException('远程 MCP URL 必须是安全的 HTTPS 地址');
+      const headers = input.headers || {};
+      if (typeof headers !== 'object' || Array.isArray(headers)) throw new BadRequestException('Headers 格式不正确');
+    }
+    if (sourceType === 'npm') {
+      if (!input.packageName || !input.packageVersion || !this.installer.packageSpecValid(input.packageName, input.packageVersion)) throw new BadRequestException('npm 包名或版本不合法');
+    }
+    if (sourceType === 'script' && !input.serverScript?.trim()) throw new BadRequestException('本地脚本 MCP 需要提供 serverScript');
+  }
+
+  private isSafeRemoteUrl(raw: string): boolean {
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== 'https:') return false;
+      const host = url.hostname.toLowerCase();
+      if (host === 'localhost' || host.endsWith('.localhost') || host === '::1' || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) return false;
+      return true;
+    } catch { return false; }
+  }
+
+  private async installNpmEntity(mcp: McpServer): Promise<McpServer> {
+    mcp.installStatus = 'installing';
+    mcp.installLog = undefined as any;
+    await this.mcpRepo.save(mcp);
+    try {
+      const result = await this.installer.installNpm(mcp.name, mcp.packageName!, mcp.packageVersion!);
+      mcp.installDir = result.installDir;
+      mcp.entrypoint = result.entrypoint;
+      mcp.command = 'node';
+      mcp.args = JSON.stringify([result.entrypoint]);
+      mcp.installLog = result.log;
+      mcp.installStatus = 'ready';
+      return this.mcpRepo.save(mcp);
+    } catch (error: any) {
+      mcp.installStatus = 'failed';
+      mcp.installLog = error?.message || 'npm MCP 安装失败';
+      await this.mcpRepo.save(mcp);
+      throw error;
+    }
+  }
+  private async validateSkillNames(skillNames: string[]): Promise<void> { const skills = await this.listSkills(); if (skillNames.some((name) => !skills.some((item) => item.name === name))) throw new BadRequestException('包含不存在的 Skill'); }
   private safeName(raw?: string): string { const name = raw?.trim(); if (!name || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) throw new BadRequestException('名称只能包含字母、数字、点、下划线和短横线'); return name; }
   private assertInside(root: string, target: string): void { const relative = path.relative(path.resolve(root), path.resolve(target)); if (relative.startsWith('..') || path.isAbsolute(relative)) throw new BadRequestException('非法路径'); }
   private async syncBuiltinMcps(): Promise<void> {

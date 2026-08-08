@@ -15,9 +15,6 @@ export class SkillGroup {
   @Column({ type: 'text', default: '[]' })
   skillNames: string;
 
-  @Column({ type: 'text', default: '[]' })
-  mcpNames: string;
-
   @CreateDateColumn()
   createdAt: Date;
 

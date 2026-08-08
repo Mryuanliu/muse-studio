@@ -13,7 +13,8 @@ const ProLayout = dynamic(
 const route = {
   path: '/',
   routes: [
-    { path: '/tasks', name: '对话' },
+    { path: '/conversations', name: '会话' },
+    { path: '/tasks', name: '任务' },
     { path: '/agents', name: '智能体' },
     { path: '/skills', name: 'Skill 管理' },
     { path: '/skill-groups', name: 'Skill 分组' },

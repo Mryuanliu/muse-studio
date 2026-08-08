@@ -45,5 +45,5 @@ export interface SandboxConfig {
   systemPrompt?: string;
   agentId?: string;
   agentType?: 'codegen' | 'other';
-  mcpServers?: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
+  mcpServers?: Record<string, { type?: 'http' | 'stdio'; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string>; timeout?: number }>;
 }

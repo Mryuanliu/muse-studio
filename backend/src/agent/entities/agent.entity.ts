@@ -10,6 +10,10 @@ export class Agent {
   @Column({ unique: true })
   name: string;
 
+  /** Stable public identifier used by conversation URLs and integrations. */
+  @Column({ unique: true, nullable: true })
+  code: string;
+
   @Column({ default: '' })
   description: string;
 

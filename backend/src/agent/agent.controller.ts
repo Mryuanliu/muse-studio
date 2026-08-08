@@ -7,6 +7,7 @@ export class AgentController {
 
   @Get() list() { return this.agents.list(); }
   @Get('runtime') runtime(@Query('id') id?: string) { return this.agents.runtime(id); }
+  @Get('code/:code') getByCode(@Param('code') code: string) { return this.agents.findByCode(code); }
   @Get(':id') get(@Param('id') id: string) { return this.agents.findOne(id); }
   @Post() create(@Body() body: any) { return this.agents.create(body); }
   @Put(':id') update(@Param('id') id: string, @Body() body: any) { return this.agents.update(id, body); }

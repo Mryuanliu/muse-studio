@@ -34,6 +34,7 @@ export class PlatformController {
   @Post('mcps') createMcp(@Body() body: any) { return this.platform.createMcp(body); }
   @Put('mcps/:name') updateMcp(@Param('name') name: string, @Body() body: any) { return this.platform.updateMcp(name, body); }
   @Delete('mcps/:name') deleteMcp(@Param('name') name: string) { return this.platform.deleteMcp(name); }
+  @Post('mcps/:name/install') installMcp(@Param('name') name: string) { return this.platform.installMcp(name); }
 
   @Get('skill-groups') listGroups() { return this.platform.listGroups(); }
   @Get('skill-groups/:id') getGroup(@Param('id') id: string) { return this.platform.getGroup(id); }

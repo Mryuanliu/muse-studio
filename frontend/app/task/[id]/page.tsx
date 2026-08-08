@@ -29,7 +29,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   agentId?: string;
   agentType?: 'codegen' | 'other';
 }) {
-  const { messages, isStreaming, sendMessage, attach, stop, conversationId, setConversationId, setMessages } = useChatSSE({
+  const { messages, isStreaming, sendMessage, attach, stop, conversationId, sdkSessionId: activeSdkSessionId, setConversationId, setMessages } = useChatSSE({
     initialMessages: initialMsgs,
     initialConversationId: convId,
     initialSdkSessionId: sdkSessionId,
@@ -147,9 +147,19 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   // loads the real task instead of /task/new.
   useEffect(() => {
     if (conversationId && (!convId || convId === 'new')) {
-      window.history.replaceState(null, '', `/task/${conversationId}${agentId ? `?agentId=${agentId}` : ''}`);
+      const params = new URLSearchParams({ sessionId: conversationId });
+      if (agentId) params.set('agentId', agentId);
+      window.history.replaceState(null, '', `/task/${conversationId}?${params.toString()}`);
     }
   }, [conversationId, convId, agentId]);
+
+  useEffect(() => {
+    if (!activeSdkSessionId || !convId || convId === 'new') return;
+    const params = new URLSearchParams(window.location.search);
+    params.set('sessionId', activeSdkSessionId);
+    if (agentId && !params.get('agentId') && !params.get('agentCode')) params.set('agentId', agentId);
+    window.history.replaceState(null, '', `/task/${convId}?${params.toString()}`);
+  }, [activeSdkSessionId, convId, agentId]);
 
   useEffect(() => {
     if (previewStatus !== 'loading' || previewHtml) return;
@@ -234,7 +244,9 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
     if (!response.ok) throw new Error('无法创建会话');
     const draft = await response.json();
     setConversationId(draft.id);
-    window.history.replaceState(null, '', `/task/${draft.id}${agentId ? `?agentId=${agentId}` : ''}`);
+    const params = new URLSearchParams({ sessionId: draft.id });
+    if (agentId) params.set('agentId', agentId);
+    window.history.replaceState(null, '', `/task/${draft.id}?${params.toString()}`);
     return draft.id as string;
   };
 
@@ -446,6 +458,8 @@ export default function TaskPage() {
   const searchParams = useSearchParams();
   const convId = params?.id as string;
   const queryAgentId = searchParams.get('agentId') || undefined;
+  const queryAgentCode = searchParams.get('agentCode') || undefined;
+  const querySessionId = searchParams.get('sessionId') || undefined;
   const isNew = convId === 'new';
   const [loading, setLoading] = useState(true);
   const [initialData, setInitialData] = useState<{
@@ -460,14 +474,21 @@ export default function TaskPage() {
 
   useEffect(() => {
     if (isNew) {
-      if (!queryAgentId) {
+      const conversationParams = new URLSearchParams();
+      if (queryAgentCode) conversationParams.set('agentCode', queryAgentCode);
+      else if (queryAgentId) conversationParams.set('agentId', queryAgentId);
+      window.history.replaceState(null, '', `/conversations${conversationParams.toString() ? `?${conversationParams.toString()}` : ''}`);
+      if (!queryAgentId && !queryAgentCode) {
         setLoading(false);
         return;
       }
-      fetch(`http://localhost:3001/agents/${encodeURIComponent(queryAgentId)}`)
+      const agentEndpoint = queryAgentCode
+        ? `http://localhost:3001/agents/code/${encodeURIComponent(queryAgentCode)}`
+        : `http://localhost:3001/agents/${encodeURIComponent(queryAgentId as string)}`;
+      fetch(agentEndpoint)
         .then((response) => response.ok ? response.json() : undefined)
         .then((agent) => {
-          setInitialData({ msgs: [], convId: 'new', agentId: queryAgentId, agentType: agent?.type });
+          setInitialData({ msgs: [], convId: 'new', agentId: agent?.id || queryAgentId, agentType: agent?.type });
         })
         .finally(() => setLoading(false));
       return;
@@ -491,7 +512,7 @@ export default function TaskPage() {
         setInitialData({
           msgs,
           convId: data.id,
-          sdkSessionId: data.sdkSessionId || undefined,
+          sdkSessionId: data.sdkSessionId || querySessionId || undefined,
           outputFiles,
           runStatus: data.runStatus || undefined,
           agentId: data.agentId || queryAgentId,
@@ -500,7 +521,7 @@ export default function TaskPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [convId, isNew, queryAgentId]);
+  }, [convId, isNew, queryAgentId, queryAgentCode, querySessionId]);
 
   if (loading) {
     return (
