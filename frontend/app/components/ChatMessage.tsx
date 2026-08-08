@@ -628,47 +628,11 @@ export default function ChatMessage({ message, isStreaming }: Props) {
   }
 
   return (
-    <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`${isUser ? 'max-w-[92%] px-3.5' : 'w-full px-3.5'} rounded-lg py-3 ${
-          isUser
-            ? 'bg-blue-50 border border-blue-200 text-blue-800'
-            : 'bg-white border border-gray-200 text-gray-800'
-        }`}
-      >
-        {/* ── Chronological event log (thinking → tool → thinking → text) ── */}
-        {!isUser && hasActivity && (
-          <div className="chat-activity mb-3">
-            {displayActivity.map((ev, i) => (
-              <EventItem
-                key={'kind' in ev
-                  ? `${ev.kind}-${'id' in ev ? ev.id : i}`
-                  : `${ev.type}-${i}-${ev.toolId || ''}`}
-                ev={ev}
-                isStreaming={isStreaming && i === displayActivity.length - 1}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* ── Main content is rendered inline when events carry text_chunk ── */}
+    <div className="flex w-full justify-end">
+      <div className="max-w-[92%] rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-3 text-blue-800">
         <div className="markdown-content text-sm leading-relaxed">
-          {isUser ? (
-            <p>{message.content}</p>
-          ) : !hasInlineText ? (
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {message.content || (isStreaming && !hasActivity ? '处理中…' : '')}
-            </ReactMarkdown>
-          ) : null}
+          <p>{message.content}</p>
         </div>
-
-        {/* ── Streaming indicator ── */}
-        {isStreaming && !isUser && !message.content && !hasInlineText && (
-          <div className="flex items-center gap-1.5 mt-2 text-xs text-gray-500">
-            <span className="animate-pulse">●</span>
-            处理中…
-          </div>
-        )}
       </div>
     </div>
   );

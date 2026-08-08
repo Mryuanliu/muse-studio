@@ -272,8 +272,6 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
             isStreaming={isStreaming && i === messages.length - 1}
           />
         ),
-      ...(msg.role === 'user'
-        ? {}
     })),
     ...askCards.map((card) => ({
       key: `ask-${card.requestId}`,
