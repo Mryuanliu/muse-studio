@@ -28,3 +28,5 @@ backend/h5-output/
 backend/proxy-logs/
 proxy-logs/
 sandbox/workspaces/
+
+docs/
