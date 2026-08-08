@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { io } from 'socket.io-client';
 import { Avatar, Button, Segmented, Tabs, Tooltip, Upload, message } from 'antd';
@@ -15,30 +15,31 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import { Bubble } from '@ant-design/x';
-import { useChatSSE, ChatMessage } from '../../hooks/useChatSSE';
+import { useChatSSE, ChatAttachment, ChatMessage } from '../../hooks/useChatSSE';
 import ChatMessageComponent from '../../components/ChatMessage';
 import PreviewPanel from '../../components/PreviewPanel';
-import AskUserCard, { AskUserCardData } from '../../components/AskUserCard';
 import WorkspaceEditor from '../../components/WorkspaceEditor';
 
-function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initialRunStatus }: {
+function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initialRunStatus, agentId, agentType }: {
   convId?: string;
   initialMsgs?: ChatMessage[];
   sdkSessionId?: string;
   initialOutputFiles?: string[];
   initialRunStatus?: string;
+  agentId?: string;
+  agentType?: 'codegen' | 'other';
 }) {
-  const { messages, isStreaming, sendMessage, attach, stop, conversationId, setConversationId } = useChatSSE({
+  const { messages, isStreaming, sendMessage, attach, stop, conversationId, setConversationId, setMessages } = useChatSSE({
     initialMessages: initialMsgs,
     initialConversationId: convId,
     initialSdkSessionId: sdkSessionId,
   });
   const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [previewHtml, setPreviewHtml] = useState<string | undefined>();
   const [previewStatus, setPreviewStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
-  const [askCards, setAskCards] = useState<AskUserCardData[]>([]);
-  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<'preview' | 'code'>('preview');
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<'preview' | 'code'>(agentType === 'other' ? 'code' : 'preview');
   const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
   const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0);
   const [uploading, setUploading] = useState(false);
@@ -47,6 +48,10 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   const previewSocketRef = React.useRef<ReturnType<typeof io> | null>(null);
   const joinedRoomRef = React.useRef<string | null>(null);
   const lastWorkspaceEventRef = React.useRef<string>('');
+
+  useEffect(() => {
+    if (agentType === 'other') setActiveWorkspaceTab('code');
+  }, [agentType]);
 
   // Preview-ready notifications are pushed through Socket.IO only.
   useEffect(() => {
@@ -70,28 +75,60 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
       }
     };
     const onAskUser = (data: any) => {
-      setAskCards((prev) => {
-        if (!data?.requestId || prev.some((card) => card.requestId === data.requestId)) {
-          return prev;
-        }
-        return [...prev, { ...data, status: 'pending' }];
+      if (!data?.requestId) return;
+      setMessages((prev) => {
+        const existingIndex = prev.findIndex((item) =>
+          item.role === 'assistant' && item.events?.some(
+            (event) => event.type === 'ask_user' && event.requestId === data.requestId,
+          ),
+        );
+        const index = existingIndex >= 0
+          ? existingIndex
+          : [...prev].map((item, i) => ({ item, i }))
+            .reverse()
+            .find(({ item }) => item.role === 'assistant')?.i;
+        if (index === undefined) return prev;
+        const message = prev[index];
+        const events = [...(message.events || [])];
+        const event = {
+          type: 'ask_user' as const,
+          requestId: data.requestId,
+          conversationId: data.conversationId,
+          toolUseID: data.toolUseID,
+          questions: data.questions,
+          answers: data.answers,
+          status: data.status || 'pending',
+        };
+        const existing = events.findIndex((item) => item.type === 'ask_user' && item.requestId === data.requestId);
+        if (existing >= 0) events[existing] = { ...events[existing], ...event };
+        else events.push(event);
+        const next = [...prev];
+        next[index] = { ...message, events };
+        return next;
       });
     };
     socket.on('preview', onPreview);
     socket.on('ask_user', onAskUser);
+
+    const joinRoom = () => {
+      if (!activeConvId) return;
+      socket.emit('preview:join', { conversationIds: [activeConvId] });
+      joinedRoomRef.current = activeConvId;
+    };
+    socket.on('connect', joinRoom);
 
     if (joinedRoomRef.current && joinedRoomRef.current !== activeConvId) {
       socket.emit('preview:leave', { conversationIds: [joinedRoomRef.current] });
       joinedRoomRef.current = null;
     }
     if (activeConvId && joinedRoomRef.current !== activeConvId) {
-      socket.emit('preview:join', { conversationIds: [activeConvId] });
-      joinedRoomRef.current = activeConvId;
+      joinRoom();
     }
 
     return () => {
       socket.off('preview', onPreview);
       socket.off('ask_user', onAskUser);
+      socket.off('connect', joinRoom);
     };
   }, [conversationId, convId]);
 
@@ -110,9 +147,9 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   // loads the real task instead of /task/new.
   useEffect(() => {
     if (conversationId && (!convId || convId === 'new')) {
-      window.history.replaceState(null, '', `/task/${conversationId}`);
+      window.history.replaceState(null, '', `/task/${conversationId}${agentId ? `?agentId=${agentId}` : ''}`);
     }
-  }, [conversationId, convId]);
+  }, [conversationId, convId, agentId]);
 
   useEffect(() => {
     if (previewStatus !== 'loading' || previewHtml) return;
@@ -183,19 +220,21 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
 
   const handleSubmit = () => {
     const text = input.trim();
-    if (!text || isStreaming) return;
+    if ((!text && !attachments.length) || isStreaming) return;
     setInput('');
-    sendMessage(text);
+    const currentAttachments = attachments;
+    setAttachments([]);
+    sendMessage(text, conversationId || convId, currentAttachments, agentId);
   };
 
   const ensureConversation = async () => {
     const active = conversationId || convId;
     if (active && active !== 'new') return active;
-    const response = await fetch('http://localhost:3001/chat/conversations/draft', { method: 'POST' });
+    const response = await fetch('http://localhost:3001/chat/conversations/draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId }) });
     if (!response.ok) throw new Error('无法创建会话');
     const draft = await response.json();
     setConversationId(draft.id);
-    window.history.replaceState(null, '', `/task/${draft.id}`);
+    window.history.replaceState(null, '', `/task/${draft.id}${agentId ? `?agentId=${agentId}` : ''}`);
     return draft.id as string;
   };
 
@@ -224,7 +263,13 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
       });
       if (!response.ok) throw new Error('图片上传失败');
       const result = await response.json();
-      setInput((value) => `${value}${value ? '\n' : ''}请参考图片 ${result.path} 完成任务`);
+      if (!result.url || !result.path) throw new Error('上传接口未返回图片地址');
+      setAttachments((current) => [...current, {
+        name: file.name,
+        mimeType: file.type,
+        path: result.path,
+        url: result.url,
+      }]);
       message.success('图片已添加到当前工作区');
     } catch (error: any) {
       message.error(error.message || '图片上传失败');
@@ -240,6 +285,10 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
     beforeUpload: uploadImage,
   };
 
+  const removeAttachment = (path: string) => {
+    setAttachments((current) => current.filter((attachment) => attachment.path !== path));
+  };
+
   const handleAskUserSubmit = async (payload: {
     requestId: string;
     answers: Record<string, string>;
@@ -253,30 +302,26 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
       const error = await res.json().catch(() => ({}));
       throw new Error(error?.error || '回答提交失败');
     }
-    setAskCards((prev) => prev.map((card) =>
-      card.requestId === payload.requestId
-        ? { ...card, status: 'submitted', submittedAnswers: payload.answers }
-        : card,
-    ));
+    setMessages((prev) => prev.map((item) => {
+      if (item.role !== 'assistant') return item;
+      const events = (item.events || []).map((event) => event.type === 'ask_user' && event.requestId === payload.requestId
+        ? { ...event, status: 'submitted', answers: payload.answers }
+        : event);
+      return { ...item, events };
+    }));
   };
 
   const bubbleItems = [
     ...messages.map((msg, i) => ({
       key: `${msg.role}-${i}`,
       role: msg.role === 'user' ? 'user' : 'ai',
-      content: msg.role === 'user'
-        ? msg.content
-        : (
-          <ChatMessageComponent
-            message={msg}
-            isStreaming={isStreaming && i === messages.length - 1}
-          />
-        ),
-    })),
-    ...askCards.map((card) => ({
-      key: `ask-${card.requestId}`,
-      role: 'ai',
-      content: <AskUserCard card={card} onSubmit={handleAskUserSubmit} />,
+      content: (
+        <ChatMessageComponent
+          message={msg}
+          isStreaming={isStreaming && i === messages.length - 1}
+          onAskUserSubmit={handleAskUserSubmit}
+        />
+      ),
     })),
   ];
 
@@ -331,6 +376,16 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
         {/* Input */}
         <div className="flex-shrink-0 border-t border-gray-200 bg-white p-3">
           <div className="workspace-composer">
+            {!!attachments.length && (
+              <div className="workspace-composer-attachments">
+                {attachments.map((attachment) => (
+                  <div className="workspace-composer-attachment" key={attachment.path}>
+                    <img src={attachment.url} alt={attachment.name} />
+                    <button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => removeAttachment(attachment.path)}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <textarea
               value={input}
               onChange={(event) => setInput(event.target.value)}
@@ -349,7 +404,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
                 <Tooltip title="添加图片"><Button type="text" icon={<PaperClipOutlined />} loading={uploading} /></Tooltip>
               </Upload>
               <span className="workspace-composer-hint">Enter 发送 · Shift + Enter 换行</span>
-              <Button type="primary" shape="circle" icon={<SendOutlined />} disabled={!input.trim() || isStreaming} onClick={handleSubmit} />
+              <Button type="primary" shape="circle" icon={<SendOutlined />} disabled={(!input.trim() && !attachments.length) || isStreaming} onClick={handleSubmit} />
             </div>
           </div>
         </div>
@@ -364,9 +419,9 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
               setActiveWorkspaceTab(key as 'preview' | 'code');
               if (key === 'preview') setPreviewRefreshKey((value) => value + 1);
             }}
-            items={[{ key: 'preview', label: '页面预览' }, { key: 'code', label: <span><CodeOutlined /> 代码</span> }]}
+            items={[...(agentType !== 'other' ? [{ key: 'preview', label: '页面预览' }] : []), { key: 'code', label: <span><CodeOutlined /> 代码</span> }]}
           />
-          {activeWorkspaceTab === 'preview' && (
+          {activeWorkspaceTab === 'preview' && agentType !== 'other' && (
             <Segmented
               value={device}
               onChange={(value) => setDevice(value as 'desktop' | 'mobile')}
@@ -375,7 +430,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
           )}
         </div>
         <div className="workspace-main-content">
-          {activeWorkspaceTab === 'preview' ? (
+          {activeWorkspaceTab === 'preview' && agentType !== 'other' ? (
             <PreviewPanel html={previewHtml} loading={previewStatus === 'loading'} error={previewStatus === 'error'} refreshKey={previewRefreshKey} device={device} />
           ) : (
             <WorkspaceEditor conversationId={(conversationId || convId) !== 'new' ? (conversationId || convId) : undefined} refreshKey={workspaceRefreshKey} onSaved={() => setPreviewRefreshKey((value) => value + 1)} />
@@ -388,7 +443,9 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
 
 export default function TaskPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const convId = params?.id as string;
+  const queryAgentId = searchParams.get('agentId') || undefined;
   const isNew = convId === 'new';
   const [loading, setLoading] = useState(true);
   const [initialData, setInitialData] = useState<{
@@ -397,11 +454,22 @@ export default function TaskPage() {
     sdkSessionId?: string;
     outputFiles?: string[];
     runStatus?: string;
+    agentId?: string;
+    agentType?: 'codegen' | 'other';
   } | undefined>();
 
   useEffect(() => {
     if (isNew) {
-      setLoading(false);
+      if (!queryAgentId) {
+        setLoading(false);
+        return;
+      }
+      fetch(`http://localhost:3001/agents/${encodeURIComponent(queryAgentId)}`)
+        .then((response) => response.ok ? response.json() : undefined)
+        .then((agent) => {
+          setInitialData({ msgs: [], convId: 'new', agentId: queryAgentId, agentType: agent?.type });
+        })
+        .finally(() => setLoading(false));
       return;
     }
     fetch(`http://localhost:3001/chat/conversations/${convId}`)
@@ -413,6 +481,7 @@ export default function TaskPage() {
           content: m.content,
           thinkingChain: m.thinkingChain || undefined,
           events: m.events ? (typeof m.events === 'string' ? JSON.parse(m.events) : m.events) : undefined,
+          attachments: m.attachments ? (typeof m.attachments === 'string' ? JSON.parse(m.attachments) : m.attachments) : undefined,
         }));
         // Parse output files from conversation
         let outputFiles: string[] | undefined;
@@ -425,11 +494,13 @@ export default function TaskPage() {
           sdkSessionId: data.sdkSessionId || undefined,
           outputFiles,
           runStatus: data.runStatus || undefined,
+          agentId: data.agentId || queryAgentId,
+          agentType: data.agentType || undefined,
         });
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [convId, isNew]);
+  }, [convId, isNew, queryAgentId]);
 
   if (loading) {
     return (
@@ -446,6 +517,8 @@ export default function TaskPage() {
       sdkSessionId={isNew ? undefined : initialData?.sdkSessionId}
       initialOutputFiles={isNew ? undefined : initialData?.outputFiles}
       initialRunStatus={isNew ? undefined : initialData?.runStatus}
+      agentId={isNew ? queryAgentId : (initialData?.agentId || queryAgentId)}
+      agentType={initialData?.agentType}
     />
   );
 }

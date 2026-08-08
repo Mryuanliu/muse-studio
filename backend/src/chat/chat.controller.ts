@@ -11,12 +11,14 @@ import {
 import { Response } from 'express';
 import { ChatService } from './chat.service';
 import { ConversationService } from '../conversation/conversation.service';
+import { AgentService } from '../agent/agent.service';
 
 @Controller('chat')
 export class ChatController {
   constructor(
     private readonly chatService: ChatService,
     private readonly conversationService: ConversationService,
+    private readonly agents: AgentService,
   ) {}
 
   /**
@@ -66,7 +68,7 @@ export class ChatController {
   }
 
   @Post('conversations/draft')
-  async createDraft() {
-    return this.conversationService.createDraft();
+  async createDraft(@Body() body: { agentId?: string }) {
+    return this.conversationService.createDraft(body?.agentId ? await this.agents.runtime(body.agentId) : undefined);
   }
 }

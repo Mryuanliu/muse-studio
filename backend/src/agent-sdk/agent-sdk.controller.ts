@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { AgentRunService } from './agent-run.service';
+import type { ChatAttachment } from '../sandbox/sandbox-types';
 
 @Controller('agent')
 export class AgentSdkController {
@@ -44,6 +45,8 @@ export class AgentSdkController {
       conversationId?: string;      // our DB conv ID
       resumeSessionId?: string;     // SDK session ID for resume
       reattach?: boolean;           // attach without adding a new user/assistant message
+      attachments?: ChatAttachment[];
+      agentId?: string;
     },
     @Res() res: Response,
   ) {
@@ -58,6 +61,9 @@ export class AgentSdkController {
         }
       },
     };
+    const heartbeat = setInterval(() => {
+      subscriber.send('heartbeat', { timestamp: Date.now() });
+    }, 15000);
 
     try {
       const donePromise = await this.agentRun.startOrAttach({
@@ -65,6 +71,8 @@ export class AgentSdkController {
         conversationId: body.conversationId,
         resumeSessionId: body.resumeSessionId,
         reattach: body.reattach,
+        attachments: body.attachments,
+        agentId: body.agentId,
       }, subscriber);
 
       await donePromise;
@@ -81,6 +89,8 @@ export class AgentSdkController {
       if (!res.writableEnded) {
         res.end();
       }
+    } finally {
+      clearInterval(heartbeat);
     }
   }
 }

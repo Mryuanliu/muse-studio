@@ -26,6 +26,10 @@ export class Message {
   @Column({ type: 'text', nullable: true })
   events: string;
 
+  /** User-uploaded attachments as a JSON array. */
+  @Column({ type: 'text', nullable: true })
+  attachments: string;
+
   @ManyToOne(() => Conversation, (conv) => conv.messages, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'conversationId' })
   conversation: Conversation;

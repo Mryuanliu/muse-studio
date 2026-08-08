@@ -1,7 +1,17 @@
 import { Injectable } from '@nestjs/common';
 import * as path from 'path';
-import type { AgentChunk, SandboxConfig } from './sandbox-types';
+import type { AgentChunk, ChatAttachment, SandboxConfig } from './sandbox-types';
 import { PlatformService } from '../platform/platform.service';
+
+export interface AgentRuntimeConfig {
+  agentId?: string;
+  agentName?: string;
+  agentType?: 'codegen' | 'other';
+  systemPrompt?: string;
+  enabledSkills: string[];
+  enabledMcps: string[];
+  mcpServers?: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
+}
 
 @Injectable()
 export class SandboxServiceClient {
@@ -25,23 +35,29 @@ export class SandboxServiceClient {
     resumeSessionId?: string,
     conversationId?: string,
     outputDir?: string,
+    attachments?: ChatAttachment[],
+    runtime?: AgentRuntimeConfig,
   ): AsyncGenerator<AgentChunk, void, undefined> {
     const config: SandboxConfig = {
       outputDir: outputDir || this.getOutputDir(conversationId),
       skillsRoot: path.resolve(this.sandboxRoot, '../skills'),
       mcpDir: path.resolve(this.sandboxRoot, 'mcp'),
-      enabledSkills: this.platform.enabledSkills(),
-      enabledMcps: this.platform.enabledMcps().map((server) => server.name),
+      enabledSkills: runtime?.enabledSkills || await this.platform.enabledSkills(),
+      enabledMcps: runtime?.enabledMcps || (await this.platform.enabledMcps()).map((server) => server.name),
       proxyUrl: process.env.AGENT_PROXY_URL || 'http://localhost:3001',
       previewTaskId: conversationId,
       conversationId,
       backendUrl: process.env.BACKEND_URL || 'http://localhost:3001',
+      systemPrompt: runtime?.systemPrompt,
+      agentId: runtime?.agentId,
+      agentType: runtime?.agentType,
+      mcpServers: runtime?.mcpServers,
     };
 
     const createRes = await fetch(`${this.baseUrl}/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, resumeSessionId, config }),
+      body: JSON.stringify({ prompt, resumeSessionId, config, attachments }),
     });
     if (!createRes.ok) {
       const error = await createRes.json().catch(() => ({}));

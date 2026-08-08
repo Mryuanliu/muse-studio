@@ -36,6 +36,19 @@ export class Conversation {
   @Column({ type: 'text', nullable: true })
   outputFiles: string;
 
+  @Column({ nullable: true })
+  agentId: string;
+
+  @Column({ nullable: true })
+  agentName: string;
+
+  @Column({ nullable: true })
+  agentType: 'codegen' | 'other';
+
+  /** Runtime snapshot keeps old conversations stable when an agent changes. */
+  @Column({ type: 'text', nullable: true })
+  agentSnapshot: string;
+
   @CreateDateColumn()
   createdAt: Date;
 

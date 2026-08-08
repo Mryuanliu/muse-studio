@@ -10,6 +10,7 @@ import { PlatformModule } from './platform/platform.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { PreviewModule } from './preview/preview.module';
 import { WorkspaceModule } from './workspace/workspace.module';
+import { AgentModule } from './agent/agent.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { WorkspaceModule } from './workspace/workspace.module';
     RealtimeModule,
     PreviewModule,
     WorkspaceModule,
+    AgentModule,
   ],
   controllers: [OutputController],
 })

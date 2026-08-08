@@ -8,10 +8,18 @@ export interface ToolCall {
   toolInput?: any;
 }
 
+export interface ChatAttachment {
+  name: string;
+  mimeType: string;
+  path: string;
+  url: string;
+}
+
 /** Chronological event in the assistant's response */
 export interface EventLog {
   type: 'thinking' | 'tool_start' | 'tool_update' | 'tool_end' | 'tool_progress' | 'status' | 'command_output'
-       | 'text_chunk' | 'skill_load' | 'skill_invoke' | 'mcp_status' | 'mcp_call';
+       | 'text_chunk' | 'skill_load' | 'skill_invoke' | 'mcp_status' | 'mcp_call' | 'ask_user'
+       | 'subagent_start' | 'subagent_progress' | 'subagent_end';
   content?: string;
   toolName?: string;
   toolId?: string;
@@ -23,6 +31,23 @@ export interface EventLog {
   status?: string;
   input?: any;
   output?: any;
+  requestId?: string;
+  conversationId?: string;
+  toolUseID?: string;
+  questions?: Array<{
+    question: string;
+    header?: string;
+    options?: Array<{ label: string; description?: string; preview?: string }>;
+    multiSelect?: boolean;
+  }>;
+  answers?: Record<string, string>;
+  taskId?: string;
+  parentToolUseId?: string | null;
+  description?: string;
+  subagentType?: string;
+  summary?: string;
+  outputFile?: string;
+  taskUsage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
 }
 
 export interface ChatMessage {
@@ -34,6 +59,7 @@ export interface ChatMessage {
   thinkingChain?: string;
   /** Chronological event log */
   events?: EventLog[];
+  attachments?: ChatAttachment[];
 }
 
 function parseEvents(value: any): EventLog[] | undefined {
@@ -46,6 +72,17 @@ function parseEvents(value: any): EventLog[] | undefined {
   }
 }
 
+function parseAttachments(value: any): ChatAttachment[] | undefined {
+  if (!value) return undefined;
+  if (Array.isArray(value)) return value as ChatAttachment[];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed as ChatAttachment[] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizeMessages(messages: any[]): ChatMessage[] {
   return (messages || []).map((m) => ({
     id: m.id,
@@ -53,6 +90,7 @@ function normalizeMessages(messages: any[]): ChatMessage[] {
     content: m.content || '',
     thinkingChain: m.thinkingChain || undefined,
     events: parseEvents(m.events),
+    attachments: parseAttachments(m.attachments),
   }));
 }
 
@@ -109,13 +147,19 @@ export function useChatSSE(opts?: {
       conversationId?: string;
       resumeSessionId?: string;
       reattach?: boolean;
+      attachments?: ChatAttachment[];
+      agentId?: string;
     },
     mode: 'send' | 'attach',
   ) => {
     if (isStreaming) return;
 
     if (mode === 'send') {
-      setMessages((prev) => [...prev, { role: 'user', content: body.prompt || '' }]);
+      setMessages((prev) => [...prev, {
+        role: 'user',
+        content: body.prompt || '',
+        attachments: body.attachments,
+      }]);
       setMessages((prev) => [...prev, { role: 'assistant', content: '', events: [] }]);
     }
     setIsStreaming(true);
@@ -221,7 +265,14 @@ export function useChatSSE(opts?: {
               break;
 
             case 'tool_progress':
-              pushEvent({ type: 'tool_progress', toolName: data.toolName, toolId: data.toolId, subtype: data.status });
+              pushEvent({
+                type: 'tool_progress',
+                toolName: data.toolName,
+                toolId: data.toolId,
+                subtype: data.status,
+                taskId: data.taskId,
+                parentToolUseId: data.parentToolUseId,
+              });
               break;
 
             case 'tool_end':
@@ -250,6 +301,26 @@ export function useChatSSE(opts?: {
 
             case 'command_output':
               pushEvent({ type: 'command_output', content: data.content });
+              break;
+
+            case 'subagent_start':
+            case 'subagent_progress':
+            case 'subagent_end':
+              pushEvent({
+                type: lastEvent,
+                taskId: data.taskId,
+                toolId: data.toolId,
+                parentToolUseId: data.parentToolUseId,
+                description: data.description,
+                subagentType: data.subagentType,
+                summary: data.summary,
+                outputFile: data.outputFile,
+                status: data.status,
+                taskUsage: data.taskUsage,
+              });
+              break;
+
+            case 'heartbeat':
               break;
 
             case 'done':
@@ -283,12 +354,19 @@ export function useChatSSE(opts?: {
     }
   }, [isStreaming]);
 
-  const sendMessage = useCallback(async (text: string, conversationOverride?: string) => {
-    if (!text.trim() || isStreaming) return;
+  const sendMessage = useCallback(async (
+    text: string,
+    conversationOverride?: string,
+    attachments?: ChatAttachment[],
+    agentId?: string,
+  ) => {
+    if ((!text.trim() && !attachments?.length) || isStreaming) return;
     await connectRun({
       prompt: text,
       conversationId: conversationOverride || conversationId || undefined,
       resumeSessionId: sdkSessionId || undefined,
+      attachments,
+      agentId,
     }, 'send');
   }, [connectRun, conversationId, sdkSessionId, isStreaming]);
 

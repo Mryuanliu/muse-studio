@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { AgentSdkService } from './agent-sdk.service';
 import { PreviewManager } from './preview-manager';
-import { AgentChunk, SandboxConfig } from './types';
+import { AgentChunk, ChatAttachment, SandboxConfig } from './types';
 
 interface SandboxTask {
   id: string;
@@ -20,6 +20,7 @@ interface StartTaskPayload {
   prompt?: string;
   resumeSessionId?: string;
   config?: SandboxConfig;
+  attachments?: ChatAttachment[];
   dryRun?: boolean;
 }
 
@@ -108,7 +109,7 @@ async function runTask(task: SandboxTask, payload: StartTaskPayload): Promise<vo
     if (task.cancelled) {
       service.stop();
     }
-    for await (const chunk of service.run(payload.prompt || '', payload.resumeSessionId)) {
+    for await (const chunk of service.run(payload.prompt || '', payload.resumeSessionId, payload.attachments)) {
       task.buffer.push(chunk);
       emit(task, 'chunk', chunk);
     }

@@ -8,9 +8,10 @@ import { RealtimeModule } from '../realtime/realtime.module';
 import { PreviewModule } from '../preview/preview.module';
 import { AskUserController } from './ask-user.controller';
 import { AskUserService } from './ask-user.service';
+import { AgentModule } from '../agent/agent.module';
 
 @Module({
-  imports: [ConversationModule, PlatformModule, RealtimeModule, PreviewModule],
+  imports: [ConversationModule, PlatformModule, AgentModule, RealtimeModule, PreviewModule],
   controllers: [AgentSdkController, AskUserController],
   providers: [SandboxServiceClient, AgentRunService, AskUserService],
   exports: [AskUserService],

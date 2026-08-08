@@ -2,7 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import * as path from 'path';
 import * as fs from 'fs';
 import { PAGE_SYSTEM_PROMPT } from './page-system-prompt';
-import { AgentChunk, SandboxConfig } from './types';
+import { AgentChunk, ChatAttachment, SandboxConfig } from './types';
 
 const SANDBOX_AGENTS = {
   'frontend-builder': {
@@ -90,6 +90,40 @@ export class AgentSdkService {
     return targets.some((target) => this.isOutsidePath(target));
   }
 
+  private imagePrompt(prompt: string, attachments: ChatAttachment[]): string | AsyncIterable<any> {
+    if (!attachments.length) return prompt;
+
+    const content: any[] = [];
+    if (prompt.trim()) content.push({ type: 'text', text: prompt });
+    for (const attachment of attachments) {
+      const file = path.resolve(this.outputDir, attachment.path);
+      const relative = path.relative(this.outputDir, file);
+      if (relative.startsWith('..') || path.isAbsolute(relative) || !fs.existsSync(file)) {
+        throw new Error(`Attachment is outside the workspace or missing: ${attachment.path}`);
+      }
+      const mimeType = attachment.mimeType.toLowerCase();
+      if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mimeType)) {
+        throw new Error(`Unsupported image type: ${attachment.mimeType}`);
+      }
+      content.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: mimeType,
+          data: fs.readFileSync(file).toString('base64'),
+        },
+      });
+    }
+
+    return (async function* () {
+      yield {
+        type: 'user',
+        message: { role: 'user', content },
+        parent_tool_use_id: null,
+      };
+    })();
+  }
+
   private syncSkills(): string[] {
     const enabled = this.config.enabledSkills || [];
     const destRoot = path.join(this.outputDir, '.claude', 'skills');
@@ -109,10 +143,13 @@ export class AgentSdkService {
   private mcpServers() {
     const servers: Record<string, any> = {};
     for (const name of this.config.enabledMcps || []) {
+      const definition = this.config.mcpServers?.[name];
+      const args = definition?.args?.length ? definition.args.map((arg) => arg === `${name}-server.mjs` ? path.join(this.config.mcpDir, arg) : arg) : [path.join(this.config.mcpDir, `${name}-server.mjs`)];
       servers[name] = {
-        command: 'node',
-        args: [path.join(this.config.mcpDir, `${name}-server.mjs`)],
+        command: definition?.command || 'node',
+        args,
         env: {
+          ...(definition?.env || {}),
           SANDBOX_ROOT: this.outputDir,
           PREVIEW_ROOT: this.outputDir,
           PREVIEW_TASK_ID: this.config.previewTaskId || '',
@@ -130,27 +167,45 @@ export class AgentSdkService {
     const conversationId = this.config.conversationId || this.config.previewTaskId || '';
     const questions = Array.isArray((input as any).questions) ? (input as any).questions : [];
 
-    const res = await fetch(`${backendUrl}/agent/ask-user/wait`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requestId: options.requestId,
-        toolUseID: options.toolUseID,
-        conversationId,
-        questions,
-      }),
-      signal: options.signal,
-    });
-    if (!res.ok) {
-      const message = await res.text().catch(() => '');
-      throw new Error(`AskUser registration failed: HTTP ${res.status} ${message}`);
+    const payload = {
+      requestId: options.requestId,
+      toolUseID: options.toolUseID,
+      conversationId,
+      questions,
+    };
+    while (!options.signal.aborted) {
+      try {
+        const res = await fetch(`${backendUrl}/agent/ask-user/wait`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: options.signal,
+        });
+        if (res.ok) return res.json();
+        if (res.status >= 400 && res.status < 500 && res.status !== 409) {
+          const message = await res.text().catch(() => '');
+          throw new Error(`AskUser registration failed: HTTP ${res.status} ${message}`);
+        }
+      } catch (error: any) {
+        if (options.signal.aborted || error?.name === 'AbortError') throw error;
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 1000);
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+        };
+        options.signal.addEventListener('abort', onAbort, { once: true });
+      });
     }
-    return res.json();
+    throw Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
   }
 
   async *run(
     prompt: string,
     resumeSessionId?: string,
+    attachments: ChatAttachment[] = [],
   ): AsyncGenerator<AgentChunk, void, undefined> {
     process.stderr.write(`[sandbox] agent run: "${prompt.slice(0, 60)}..."${resumeSessionId ? ' (resume)' : ''}\n`);
 
@@ -161,7 +216,7 @@ export class AgentSdkService {
     const enabledSkills = this.syncSkills();
 
     const makeQuery = (resume?: string) => query({
-      prompt,
+      prompt: this.imagePrompt(prompt, attachments) as any,
       options: {
         env: {
           ...process.env as Record<string, string>,
@@ -195,10 +250,11 @@ export class AgentSdkService {
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
-          append: PAGE_SYSTEM_PROMPT,
+          append: [PAGE_SYSTEM_PROMPT, this.config.systemPrompt].filter(Boolean).join('\n\n'),
         },
         agents: SANDBOX_AGENTS,
         forwardSubagentText: true,
+        agentProgressSummaries: true,
         toolConfig: {
           askUserQuestion: { previewFormat: 'html' },
         },
@@ -309,6 +365,34 @@ export class AgentSdkService {
         }
 
         switch (msg.type) {
+
+          // When forwardSubagentText is enabled, subagent turns arrive as
+          // assistant messages with a parent tool-use id instead of only as
+          // partial stream events. Surface their text as progress without
+          // mixing it into the parent agent's final answer.
+          case 'assistant': {
+            const assistant = msg as any;
+            if (assistant.parent_tool_use_id) {
+              const blocks = Array.isArray(assistant.message?.content)
+                ? assistant.message.content
+                : [];
+              const text = blocks
+                .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+                .map((block: any) => block.text)
+                .join('\n')
+                .trim();
+              if (text) {
+                yield {
+                  type: 'subagent_progress',
+                  taskId: assistant.task_id,
+                  parentToolUseId: assistant.parent_tool_use_id,
+                  summary: text,
+                  status: 'running',
+                };
+              }
+            }
+            continue;
+          }
 
           // ── Structured tool results ──
           case 'user': {
@@ -438,7 +522,14 @@ export class AgentSdkService {
           // ── Tool progress ──
           case 'tool_progress': {
             const tp = msg as any;
-            yield { type: 'tool_progress', toolName: tp.tool_name, toolId: tp.tool_use_id, subtype: tp.status || 'running' };
+            yield {
+              type: 'tool_progress',
+              toolName: tp.tool_name,
+              toolId: tp.tool_use_id,
+              subtype: tp.status || 'running',
+              taskId: tp.task_id,
+              parentToolUseId: tp.parent_tool_use_id,
+            };
             continue;
           }
 
@@ -452,6 +543,46 @@ export class AgentSdkService {
               for (const mcp of sm.mcp_servers || []) {
                 yield { type: 'mcp_status', serverName: mcp.name, status: mcp.status };
               }
+            }
+            if (sm.subtype === 'task_started') {
+              yield {
+                type: 'subagent_start',
+                taskId: sm.task_id,
+                toolId: sm.tool_use_id,
+                parentToolUseId: sm.tool_use_id || null,
+                description: sm.description,
+                subagentType: sm.subagent_type,
+                summary: sm.prompt,
+                status: 'running',
+              };
+            } else if (sm.subtype === 'task_progress') {
+              yield {
+                type: 'subagent_progress',
+                taskId: sm.task_id,
+                toolId: sm.tool_use_id,
+                description: sm.description,
+                subagentType: sm.subagent_type,
+                summary: sm.summary,
+                status: 'running',
+                taskUsage: sm.usage,
+              };
+            } else if (sm.subtype === 'task_notification') {
+              yield {
+                type: 'subagent_end',
+                taskId: sm.task_id,
+                toolId: sm.tool_use_id,
+                summary: sm.summary,
+                outputFile: sm.output_file,
+                status: sm.status,
+                taskUsage: sm.usage,
+              };
+            } else if (sm.subtype === 'task_updated') {
+              yield {
+                type: 'subagent_progress',
+                taskId: sm.task_id,
+                summary: sm.patch?.error,
+                status: sm.patch?.status || 'running',
+              };
             }
             const text = typeof sm.text === 'string' ? sm.text : null;
             if (text) yield { type: 'status', content: text, subtype: sm.subtype };

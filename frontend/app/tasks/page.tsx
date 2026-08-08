@@ -4,6 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { Button, Popconfirm, Tag, message } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
+import { Modal, Select } from 'antd';
 import { ProTable } from '@ant-design/pro-components';
 import type { ActionType } from '@ant-design/pro-components';
 import AdminShell from '../components/AdminShell';
@@ -17,10 +18,22 @@ interface Conversation {
   messageCount?: number;
   createdAt: string;
   updatedAt: string;
+  agentId?: string;
 }
 
 export default function TasksPage() {
   const actionRef = React.useRef<ActionType>(null);
+  const [agentOpen, setAgentOpen] = React.useState(false);
+  const [agents, setAgents] = React.useState<{ id: string; name: string; type: string }[]>([]);
+  const [selectedAgent, setSelectedAgent] = React.useState<string>();
+
+  const openNewConversation = async () => {
+    if (!agents.length) {
+      const response = await fetch('http://localhost:3001/agents');
+      setAgents(await response.json());
+    }
+    setAgentOpen(true);
+  };
 
   const stopTask = async (id: string) => {
     const res = await fetch('http://localhost:3001/agent/stop', {
@@ -45,9 +58,7 @@ export default function TasksPage() {
         search={false}
         pagination={{ pageSize: 10 }}
         toolBarRender={() => [
-          <Link key="new" href="/task/new">
-            <Button type="primary" icon={<PlusOutlined />}>新建任务</Button>
-          </Link>,
+          <Button key="new" type="primary" icon={<PlusOutlined />} onClick={() => void openNewConversation()}>新建对话</Button>,
         ]}
         request={async () => {
           const res = await fetch('http://localhost:3001/chat/conversations');
@@ -103,7 +114,7 @@ export default function TasksPage() {
             title: '操作',
             valueType: 'option',
             render: (_, record) => [
-              <Link key="open" href={`/task/${record.id}`}>进入</Link>,
+              <Link key="open" href={`/task/${record.id}${record.agentId ? `?agentId=${record.agentId}` : ''}`}>进入</Link>,
               <Popconfirm
                 key="stop"
                 title="确定结束当前本轮生成？"
@@ -123,6 +134,9 @@ export default function TasksPage() {
           },
         ]}
       />
+      <Modal open={agentOpen} title="选择智能体" okText="开始对话" cancelText="取消" onCancel={() => setAgentOpen(false)} onOk={() => { window.location.href = `/task/new${selectedAgent ? `?agentId=${selectedAgent}` : ''}`; }}>
+        <Select className="w-full" placeholder="选择智能体，或使用默认配置" allowClear value={selectedAgent} onChange={setSelectedAgent} options={agents.map((agent) => ({ value: agent.id, label: `${agent.name} · ${agent.type === 'codegen' ? '生码' : '其他'}` }))} />
+      </Modal>
     </AdminShell>
   );
 }

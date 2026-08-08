@@ -188,6 +188,17 @@ export default function AskUserCard({ card, onSubmit }: AskUserCardProps) {
         );
       })}
 
+      {submitted && card.submittedAnswers && (
+        <div className="mb-3 rounded-md bg-slate-50 px-2.5 py-2 text-xs text-slate-600">
+          {Object.entries(card.submittedAnswers).map(([question, answer]) => (
+            <div key={question} className="flex gap-2 py-0.5">
+              <span className="font-medium text-slate-500">{question}:</span>
+              <span>{answer}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {submitError && (
         <Alert type="error" showIcon message={submitError} className="mb-2" />
       )}

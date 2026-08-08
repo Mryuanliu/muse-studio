@@ -46,7 +46,7 @@ async function bootstrap() {
         if (typeof id === 'string') {
           void socket.join(`conversation:${id}`);
 
-          for (const pendingQuestion of askUserService.getPendingForConversation(id)) {
+          for (const pendingQuestion of await askUserService.getPendingForConversation(id)) {
             socket.emit('ask_user', pendingQuestion);
           }
 

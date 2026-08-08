@@ -261,6 +261,8 @@ html, body {
   padding: 4px 8px;
 }
 .activity-success { color: #16a34a; }
+.activity-progress { color: #2563eb; }
+.activity-error { color: #dc2626; }
 
 .task-activity-row {
   display: flex;
@@ -433,6 +435,13 @@ html, body {
 .workspace-empty-editor { flex: 1; padding-top: 20vh; }
 
 .workspace-composer { overflow: hidden; border: 1px solid #dbe3ee; border-radius: 9px; background: #fff; box-shadow: 0 2px 8px rgba(15, 23, 42, .04); }
+.workspace-composer-attachments { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 12px 0; }
+.workspace-composer-attachment { position: relative; width: 72px; height: 54px; overflow: hidden; border: 1px solid #dbe3ee; border-radius: 5px; background: #f8fafc; }
+.workspace-composer-attachment img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.workspace-composer-attachment button { position: absolute; top: 2px; right: 2px; width: 17px; height: 17px; padding: 0; border: 0; border-radius: 50%; background: rgba(15, 23, 42, .68); color: #fff; font-size: 14px; line-height: 15px; cursor: pointer; }
+.chat-attachment-list { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.chat-attachment-list-user { justify-content: flex-end; }
+.chat-attachment-thumb { display: block; overflow: hidden; border-radius: 6px; object-fit: cover; }
 .workspace-composer textarea { display: block; width: 100%; min-height: 92px; padding: 12px 13px; border: 0; outline: 0; resize: vertical; color: #1e293b; font: inherit; font-size: 13px; line-height: 1.55; }
 .workspace-composer textarea::placeholder { color: #94a3b8; }
 .workspace-composer-footer { display: flex; align-items: center; gap: 6px; padding: 5px 8px 7px; border-top: 1px solid #f1f5f9; }

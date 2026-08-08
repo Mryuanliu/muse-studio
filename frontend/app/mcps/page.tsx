@@ -1,82 +1,20 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
-import { Button, Tag, Typography } from 'antd';
-import { ProCard } from '@ant-design/pro-components';
+import React, { useEffect, useState } from 'react';
+import { Button, Form, Input, Modal, Popconfirm, Space, Table, Tag, message } from 'antd';
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import AdminShell from '../components/AdminShell';
 
-interface McpServerInfo {
-  name: string;
-  description: string;
-  status: string;
-  enabled: boolean;
-  tools: string[];
-}
+const API = 'http://localhost:3001';
+type Mcp = { name: string; description: string; status: string; enabled: boolean; tools: string[]; builtin?: boolean; serverScript?: string };
 
 export default function McpsPage() {
-  const [servers, setServers] = useState<McpServerInfo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    fetch('http://localhost:3001/mcps')
-      .then((r) => r.json())
-      .then((data) => setServers(data))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(load, [load]);
-
-  const toggle = async (server: McpServerInfo) => {
-    setBusy(server.name);
-    try {
-      const res = await fetch(`http://localhost:3001/mcps/${encodeURIComponent(server.name)}/toggle`, {
-        method: 'POST',
-      });
-      const next = await res.json();
-      setServers((prev) => prev.map((s) => s.name === server.name ? { ...s, enabled: next.enabled } : s));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  return (
-    <AdminShell>
-      <ProCard title="MCP 管理" bordered loading={loading}>
-        <div className="grid gap-4 md:grid-cols-2">
-          {servers.map((server) => (
-            <ProCard key={server.name} bordered hoverable>
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Typography.Text strong>{server.name}</Typography.Text>
-                    <Tag color="blue">{server.status}</Tag>
-                    <Tag color={server.enabled ? 'green' : 'default'}>
-                      {server.enabled ? '已启用' : '已停用'}
-                    </Tag>
-                  </div>
-                  <Typography.Paragraph type="secondary" className="mt-2 mb-0">
-                    {server.description}
-                  </Typography.Paragraph>
-                  <div className="flex flex-wrap gap-1 mt-2">
-                    {server.tools.map((tool) => (
-                      <Tag key={tool}>{tool}</Tag>
-                    ))}
-                  </div>
-                </div>
-                <Button
-                  size="small"
-                  onClick={() => toggle(server)}
-                  loading={busy === server.name}
-                >
-                  {server.enabled ? '停用' : '启用'}
-                </Button>
-              </div>
-            </ProCard>
-          ))}
-        </div>
-      </ProCard>
-    </AdminShell>
-  );
+  const [servers, setServers] = useState<Mcp[]>([]); const [loading, setLoading] = useState(true); const [open, setOpen] = useState(false); const [editing, setEditing] = useState<Mcp>(); const [form] = Form.useForm();
+  const load = async () => { setLoading(true); try { const response = await fetch(`${API}/mcps`); setServers(await response.json()); } finally { setLoading(false); } };
+  useEffect(() => { void load(); }, []);
+  const show = async (server?: Mcp) => { setEditing(server); if (server) { const response = await fetch(`${API}/mcps/${encodeURIComponent(server.name)}`); const data = await response.json(); form.setFieldsValue({ ...data, tools: (data.tools || []).join(','), args: (data.args || []).join(' ') }); } else form.resetFields(); setOpen(true); };
+  const submit = async (values: any) => { const endpoint = editing ? `${API}/mcps/${encodeURIComponent(editing.name)}` : `${API}/mcps`; const response = await fetch(endpoint, { method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...values, tools: values.tools ? values.tools.split(',').map((v: string) => v.trim()).filter(Boolean) : [], args: values.args ? values.args.split(/\s+/).filter(Boolean) : [] }) }); if (!response.ok) { const data = await response.json().catch(() => ({})); message.error(data.message || '保存失败'); return; } message.success('MCP 已保存'); setOpen(false); await load(); };
+  const toggle = async (server: Mcp) => { const response = await fetch(`${API}/mcps/${encodeURIComponent(server.name)}/toggle`, { method: 'POST' }); if (response.ok) await load(); };
+  const remove = async (server: Mcp) => { const response = await fetch(`${API}/mcps/${encodeURIComponent(server.name)}`, { method: 'DELETE' }); if (!response.ok) { const data = await response.json().catch(() => ({})); message.error(data.message || '删除失败'); return; } message.success('MCP 已删除'); await load(); };
+  return <AdminShell><div className="mb-4 flex items-center justify-between"><div><h1 className="text-xl font-semibold">MCP 管理</h1><p className="text-sm text-gray-500">管理智能体可以调用的工具服务</p></div><Button type="primary" icon={<PlusOutlined />} onClick={() => void show()}>新增 MCP</Button></div><Table rowKey="name" loading={loading} dataSource={servers} columns={[{ title: '名称', dataIndex: 'name' }, { title: '描述', dataIndex: 'description' }, { title: '工具数', dataIndex: 'tools', render: (v: string[]) => v?.length || 0 }, { title: '状态', dataIndex: 'enabled', render: (v: boolean, row: Mcp) => <Space><Tag color={v ? 'green' : 'default'}>{v ? '已启用' : '已停用'}</Tag>{row.builtin && <Tag>内置</Tag>}</Space> }, { title: '操作', render: (_: unknown, row: Mcp) => <Space><Button type="link" icon={<EditOutlined />} onClick={() => void show(row)}>编辑</Button><Button type="link" onClick={() => void toggle(row)}>{row.enabled ? '停用' : '启用'}</Button><Popconfirm title="确定删除这个 MCP？" onConfirm={() => void remove(row)} disabled={row.builtin}><Button type="link" danger icon={<DeleteOutlined />} disabled={row.builtin}>删除</Button></Popconfirm></Space> }]} /><Modal open={open} title={editing ? '编辑 MCP' : '新增 MCP'} destroyOnClose footer={null} onCancel={() => setOpen(false)}><Form form={form} layout="vertical" onFinish={submit} className="pt-4"><Form.Item name="name" label="名称" rules={[{ required: true }]}><Input disabled={Boolean(editing)} placeholder="例如 database" /></Form.Item><Form.Item name="description" label="描述"><Input /></Form.Item><Form.Item name="command" label="启动命令"><Input placeholder="默认 node" /></Form.Item><Form.Item name="args" label="启动参数"><Input placeholder="例如 database-server.mjs" /></Form.Item><Form.Item name="tools" label="工具名称"><Input placeholder="多个工具用英文逗号分隔" /></Form.Item><Form.Item name="serverScript" label="server.mjs 内容" rules={[{ required: !editing, message: '请输入服务脚本' }]}><Input.TextArea rows={16} placeholder="请输入可由 node 启动的 MCP server 脚本" /></Form.Item><div className="flex justify-end gap-2"><Button onClick={() => setOpen(false)}>取消</Button><Button type="primary" htmlType="submit">保存</Button></div></Form></Modal></AdminShell>;
 }

@@ -1,11 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { SandboxServiceClient } from '../sandbox/sandbox-service-client';
+import { AgentRuntimeConfig, SandboxServiceClient } from '../sandbox/sandbox-service-client';
 import { ConversationService } from '../conversation/conversation.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { PreviewService } from '../preview/preview.service';
-import { AskUserService } from './ask-user.service';
+import { AskUserEvent, AskUserService } from './ask-user.service';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { ChatAttachment } from '../sandbox/sandbox-types';
+import { AgentService } from '../agent/agent.service';
 
 export interface AgentRunSubscriber {
   /** Return false when the SSE client is no longer writable. */
@@ -18,11 +20,13 @@ interface NormalizedMessage {
   content: string;
   thinkingChain?: string;
   events?: any[];
+  attachments?: ChatAttachment[];
 }
 
 interface ActiveRun {
   conversationId: string;
   prompt: string;
+  attachments: ChatAttachment[];
   assistantMessageId: string;
   outputDir: string;
   resumeSessionId?: string;
@@ -36,6 +40,7 @@ interface ActiveRun {
   subscribers: Set<AgentRunSubscriber>;
   resolve: () => void;
   donePromise: Promise<void>;
+  runtime: AgentRuntimeConfig;
 }
 
 function parseEvents(value: any): any[] {
@@ -55,7 +60,19 @@ function normalizeMessage(message: any): NormalizedMessage {
     content: message.content || '',
     thinkingChain: message.thinkingChain || undefined,
     events: parseEvents(message.events),
+    attachments: parseAttachments(message.attachments),
   };
+}
+
+function parseAttachments(value: any): ChatAttachment[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value as ChatAttachment[];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed as ChatAttachment[] : [];
+  } catch {
+    return [];
+  }
 }
 
 function compactEvents(events: any[]): any[] {
@@ -88,7 +105,25 @@ export class AgentRunService {
     private readonly realtime: RealtimeService,
     private readonly preview: PreviewService,
     private readonly askUser: AskUserService,
-  ) {}
+    private readonly agents: AgentService,
+  ) {
+    this.askUser.subscribe((event) => this.handleAskUserEvent(event));
+  }
+
+  private handleAskUserEvent(event: AskUserEvent): void {
+    const run = this.runs.get(event.conversationId);
+    if (!run) return;
+    const index = run.events.findIndex(
+      (item) => item.type === 'ask_user' && item.requestId === event.requestId,
+    );
+    if (index >= 0) {
+      run.events[index] = { ...run.events[index], ...event };
+    } else {
+      run.events.push(event);
+    }
+    void this.persist(run);
+    this.broadcast(run, 'ask_user', event);
+  }
 
   /** Attach to an active in-memory run, or start/resume a backend run. */
   async startOrAttach(
@@ -97,6 +132,8 @@ export class AgentRunService {
       conversationId?: string;
       resumeSessionId?: string;
       reattach?: boolean;
+      attachments?: ChatAttachment[];
+      agentId?: string;
     },
     subscriber: AgentRunSubscriber,
   ): Promise<Promise<void>> {
@@ -190,6 +227,8 @@ export class AgentRunService {
     conversationId?: string;
     resumeSessionId?: string;
     reattach?: boolean;
+      attachments?: ChatAttachment[];
+    agentId?: string;
   }): Promise<ActiveRun> {
     if (params.reattach) {
       if (!params.conversationId) {
@@ -215,9 +254,14 @@ export class AgentRunService {
         events: [],
       };
 
+      const runtime = await this.runtimeFromConversation(conv);
+
       return this.buildRun({
         conversationId: conv.id,
-        prompt: lastUser.content,
+        prompt: lastUser.content || (lastUser.attachments?.length
+          ? '请查看附件中的图片，并根据图片完成任务。'
+          : ''),
+        attachments: parseAttachments(lastUser.attachments),
         assistantMessageId: lastAssistant.id,
         outputDir: conv.outputDir || this.agentSdk.getLegacyOutputDir(),
         resumeSessionId,
@@ -225,19 +269,26 @@ export class AgentRunService {
         content: baseAssistant.content || '',
         thinkingChain: baseAssistant.thinkingChain || '',
         events: compactEvents(baseAssistant.events || []),
+        runtime,
       });
     }
 
-    const prompt = params.prompt?.trim();
-    if (!prompt) {
+    const attachments = params.attachments || [];
+    const userContent = params.prompt?.trim() || '';
+    const prompt = userContent || (attachments.length ? '请查看附件中的图片，并根据图片完成任务。' : '');
+    if (!userContent && !attachments.length) {
       throw new Error('prompt is required');
     }
 
     let conversationId = params.conversationId;
+    let runtime = await this.agents.runtime(params.agentId);
     if (conversationId) {
-      await this.conversation.addMessage(conversationId, 'user', prompt);
+      const existing = await this.conversation.findOne(conversationId);
+      if (existing.agentSnapshot) runtime = await this.runtimeFromConversation(existing);
+      await this.conversation.addMessage(conversationId, 'user', userContent, undefined, undefined, attachments);
+      if (!existing.agentSnapshot && params.agentId) await this.conversation.setAgentSnapshot(conversationId, runtime);
     } else {
-      const conv = await this.conversation.create(prompt);
+      const conv = await this.conversation.create(userContent, attachments, runtime);
       conversationId = conv.id;
     }
 
@@ -257,6 +308,7 @@ export class AgentRunService {
     return this.buildRun({
       conversationId,
       prompt,
+      attachments,
       assistantMessageId: assistantMsg.id,
       outputDir,
       resumeSessionId: params.resumeSessionId || conv.sdkSessionId,
@@ -264,12 +316,14 @@ export class AgentRunService {
       content: '',
       thinkingChain: '',
       events: [],
+      runtime,
     });
   }
 
   private buildRun(input: {
     conversationId: string;
     prompt: string;
+    attachments?: ChatAttachment[];
     assistantMessageId: string;
     outputDir: string;
     resumeSessionId?: string;
@@ -277,6 +331,7 @@ export class AgentRunService {
     content: string;
     thinkingChain: string;
     events: any[];
+    runtime: AgentRuntimeConfig;
   }): ActiveRun {
     let resolve!: () => void;
     const donePromise = new Promise<void>((r) => {
@@ -285,11 +340,33 @@ export class AgentRunService {
 
     return {
       ...input,
+      attachments: input.attachments || [],
       status: 'running',
       subscribers: new Set(),
       resolve,
       donePromise,
+      runtime: input.runtime,
     };
+  }
+
+  private async runtimeFromConversation(conv: any): Promise<AgentRuntimeConfig> {
+    if (conv.agentSnapshot) {
+      try {
+        const snapshot = JSON.parse(conv.agentSnapshot);
+        return {
+          agentId: snapshot.agentId,
+          agentName: snapshot.agentName,
+          agentType: snapshot.agentType,
+          systemPrompt: snapshot.systemPrompt || snapshot.agentPrompt,
+          enabledSkills: snapshot.enabledSkills || [],
+          enabledMcps: snapshot.enabledMcps || [],
+          mcpServers: snapshot.mcpServers || {},
+        };
+      } catch {
+        // Fall through to the current platform defaults for malformed legacy data.
+      }
+    }
+    return this.agents.runtime();
   }
 
   private sendSnapshot(run: ActiveRun, subscriber: AgentRunSubscriber): void {
@@ -321,6 +398,8 @@ export class AgentRunService {
         run.resumeSessionId,
         run.conversationId,
         run.outputDir,
+        run.attachments,
+        run.runtime,
       )) {
         switch (chunk.type) {
           case 'session':
@@ -381,12 +460,16 @@ export class AgentRunService {
               toolName: chunk.toolName,
               toolId: chunk.toolId,
               status: chunk.subtype,
+              taskId: chunk.taskId,
+              parentToolUseId: chunk.parentToolUseId,
             });
             await this.persist(run);
             this.broadcast(run, 'tool_progress', {
               toolName: chunk.toolName,
               toolId: chunk.toolId,
               status: chunk.subtype,
+              taskId: chunk.taskId,
+              parentToolUseId: chunk.parentToolUseId,
             });
             break;
           case 'tool_end':
@@ -504,6 +587,26 @@ export class AgentRunService {
             await this.persist(run);
             this.broadcast(run, 'command_output', { content: chunk.content });
             break;
+          case 'subagent_start':
+          case 'subagent_progress':
+          case 'subagent_end': {
+            const event = {
+              type: chunk.type,
+              taskId: chunk.taskId,
+              toolId: chunk.toolId,
+              parentToolUseId: chunk.parentToolUseId,
+              description: chunk.description,
+              subagentType: chunk.subagentType,
+              summary: chunk.summary,
+              outputFile: chunk.outputFile,
+              status: chunk.status,
+              taskUsage: chunk.taskUsage,
+            };
+            run.events.push(event);
+            await this.persist(run);
+            this.broadcast(run, chunk.type, event);
+            break;
+          }
           case 'done':
             run.status = 'completed';
             if (!this.preview.getUrl(run.conversationId)) {

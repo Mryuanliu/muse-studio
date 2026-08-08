@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Avatar, Collapse } from 'antd';
+import { Avatar, Collapse, Image } from 'antd';
 import {
   CheckCircleOutlined,
   CheckSquareOutlined,
@@ -22,12 +22,14 @@ import {
   ToolOutlined,
   WifiOutlined,
 } from '@ant-design/icons';
-import type { ChatMessage as ChatMessageType, EventLog } from '../hooks/useChatSSE';
+import type { ChatAttachment, ChatMessage as ChatMessageType, EventLog } from '../hooks/useChatSSE';
 import { Think } from '@ant-design/x';
+import AskUserCard from './AskUserCard';
 
 interface Props {
   message: ChatMessageType;
   isStreaming: boolean;
+  onAskUserSubmit?: (payload: { requestId: string; answers: Record<string, string> }) => Promise<void>;
 }
 
 /* ── Small, consistent tool vocabulary ── */
@@ -506,7 +508,15 @@ function TaskActivityRow({ task }: { task: TaskActivity }) {
 }
 
 /* ── Single event item ── */
-function EventItem({ ev, isStreaming }: { ev: DisplayEvent; isStreaming: boolean }) {
+function EventItem({
+  ev,
+  isStreaming,
+  onAskUserSubmit,
+}: {
+  ev: DisplayEvent;
+  isStreaming: boolean;
+  onAskUserSubmit?: Props['onAskUserSubmit'];
+}) {
   const [expanded, setExpanded] = useState(false);
 
   if ('kind' in ev) {
@@ -517,6 +527,21 @@ function EventItem({ ev, isStreaming }: { ev: DisplayEvent; isStreaming: boolean
   }
 
   switch (ev.type) {
+    case 'ask_user':
+      return onAskUserSubmit ? (
+        <AskUserCard
+          card={{
+            requestId: ev.requestId || '',
+            conversationId: ev.conversationId,
+            toolUseID: ev.toolUseID,
+            questions: ev.questions || [],
+            status: ev.status === 'submitted' ? 'submitted' : 'pending',
+            submittedAnswers: ev.answers,
+          }}
+          onSubmit={onAskUserSubmit}
+        />
+      ) : null;
+
     case 'thinking':
       return <ThinkingPanel content={ev.content} />;
 
@@ -527,6 +552,21 @@ function EventItem({ ev, isStreaming }: { ev: DisplayEvent; isStreaming: boolean
           <span>{toolName(ev.toolName || '')} · {ev.subtype === 'running' ? '执行中' : ev.subtype}</span>
         </div>
       );
+
+    case 'subagent_start':
+    case 'subagent_progress':
+    case 'subagent_end': {
+      const isDone = ev.type === 'subagent_end';
+      const isFailed = isDone && ['failed', 'stopped', 'killed'].includes(ev.status || '');
+      const label = isFailed ? '子代理失败' : isDone ? '子代理已完成' : '子代理执行中';
+      const detail = ev.summary || ev.description || ev.subagentType || '正在处理任务';
+      return (
+        <div className={`activity-note ${isFailed ? 'activity-error' : isDone ? 'activity-success' : 'activity-progress'}`}>
+          {isDone ? (isFailed ? <QuestionCircleOutlined /> : <CheckCircleOutlined />) : <LoadingOutlined spin />}
+          <span>{label} · {detail}</span>
+        </div>
+      );
+    }
 
     case 'skill_load':
     case 'mcp_status':
@@ -578,7 +618,7 @@ function EventItem({ ev, isStreaming }: { ev: DisplayEvent; isStreaming: boolean
   }
 }
 
-export default function ChatMessage({ message, isStreaming }: Props) {
+export default function ChatMessage({ message, isStreaming, onAskUserSubmit }: Props) {
   const isUser = message.role === 'user';
   const activity = isUser ? [] : buildChronologicalEvents(message);
   const displayActivity = isUser ? [] : groupToolEvents(activity, isStreaming);
@@ -605,6 +645,7 @@ export default function ChatMessage({ message, isStreaming }: Props) {
                     : `${ev.type}-${i}-${ev.toolId || ''}`}
                   ev={ev}
                   isStreaming={isStreaming && i === displayActivity.length - 1}
+                  onAskUserSubmit={onAskUserSubmit}
                 />
               ))}
             </div>
@@ -630,8 +671,23 @@ export default function ChatMessage({ message, isStreaming }: Props) {
   return (
     <div className="flex w-full justify-end">
       <div className="max-w-[92%] rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-3 text-blue-800">
+        {!!message.attachments?.length && (
+          <div className="chat-attachment-list chat-attachment-list-user">
+            {message.attachments.map((attachment: ChatAttachment) => (
+              <Image
+                key={`${attachment.path}-${attachment.name}`}
+                src={attachment.url}
+                alt={attachment.name}
+                width={180}
+                height={120}
+                className="chat-attachment-thumb"
+                preview
+              />
+            ))}
+          </div>
+        )}
         <div className="markdown-content text-sm leading-relaxed">
-          <p>{message.content}</p>
+          {message.content ? <p>{message.content}</p> : null}
         </div>
       </div>
     </div>

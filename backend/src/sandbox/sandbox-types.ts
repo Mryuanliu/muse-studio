@@ -1,7 +1,8 @@
 export interface AgentChunk {
   type: 'session' | 'thinking' | 'text' | 'tool_start' | 'tool_update' | 'tool_end'
        | 'tool_progress' | 'status' | 'command_output' | 'done' | 'stopped'
-       | 'skill_load' | 'skill_invoke' | 'mcp_status' | 'mcp_call';
+       | 'skill_load' | 'skill_invoke' | 'mcp_status' | 'mcp_call'
+       | 'subagent_start' | 'subagent_progress' | 'subagent_end';
   sessionId?: string;
   content?: string;
   toolName?: string;
@@ -15,6 +16,20 @@ export interface AgentChunk {
   status?: string;
   input?: any;
   output?: any;
+  taskId?: string;
+  parentToolUseId?: string | null;
+  description?: string;
+  subagentType?: string;
+  summary?: string;
+  outputFile?: string;
+  taskUsage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
+}
+
+export interface ChatAttachment {
+  name: string;
+  mimeType: string;
+  path: string;
+  url: string;
 }
 
 export interface SandboxConfig {
@@ -27,4 +42,8 @@ export interface SandboxConfig {
   previewTaskId?: string;
   conversationId?: string;
   backendUrl?: string;
+  systemPrompt?: string;
+  agentId?: string;
+  agentType?: 'codegen' | 'other';
+  mcpServers?: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
 }

@@ -45,7 +45,12 @@ export class WorkspaceController {
   @Post(':conversationId/upload')
   async upload(@Param('conversationId') conversationId: string, @Body() body: { filename?: string; mimeType?: string; data?: string }) {
     if (!body.filename || !body.data || !body.mimeType?.startsWith('image/')) throw new Error('An image filename, mimeType and data are required');
-    return this.workspace.saveUpload(await this.workspace.rootFor(conversationId), body.filename, body.mimeType, body.data);
+    const saved = this.workspace.saveUpload(await this.workspace.rootFor(conversationId), body.filename, body.mimeType, body.data);
+    const baseUrl = process.env.PUBLIC_BASE_URL || 'http://localhost:3001';
+    return {
+      ...saved,
+      url: `${baseUrl}/workspace/${encodeURIComponent(conversationId)}/raw?path=${encodeURIComponent(saved.path)}`,
+    };
   }
 
   @Get(':conversationId/raw')
