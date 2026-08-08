@@ -19,12 +19,9 @@ export class Message {
   @Column({ type: 'text' })
   content: string;
 
+  /** Versioned, provider-independent event log as JSON array. */
   @Column({ type: 'text', nullable: true })
-  thinkingChain: string;
-
-  /** Chronological event log as JSON array */
-  @Column({ type: 'text', nullable: true })
-  events: string;
+  museEvents: string;
 
   /** User-uploaded attachments as a JSON array. */
   @Column({ type: 'text', nullable: true })

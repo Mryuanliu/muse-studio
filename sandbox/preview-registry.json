@@ -1,66 +1,50 @@
 {
-  "lastPort": 4139,
+  "lastPort": 4161,
   "records": {
-    "5dbe7296-1f23-4610-9826-4844848a93ab": {
-      "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/5dbe7296-1f23-4610-9826-4844848a93ab",
+    "30cab88e-167b-4836-a216-82ee228bf8b1": {
+      "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/30cab88e-167b-4836-a216-82ee228bf8b1",
       "command": "npx",
       "args": [
         "next",
         "dev",
         "--port",
-        "4100"
+        "4151"
       ],
       "status": "running",
-      "updatedAt": 1786154274412,
-      "taskId": "5dbe7296-1f23-4610-9826-4844848a93ab",
-      "port": 4100,
-      "pid": 9023,
-      "url": "http://localhost:4100"
+      "updatedAt": 1786203002435,
+      "taskId": "30cab88e-167b-4836-a216-82ee228bf8b1",
+      "port": 4151,
+      "pid": 55505,
+      "url": "http://localhost:4151"
     },
-    "11bec1bc-0861-4b86-9a8d-7f7f06006711": {
-      "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/11bec1bc-0861-4b86-9a8d-7f7f06006711",
+    "07bdd638-0c16-4391-989a-bd39fc933bd7": {
+      "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/07bdd638-0c16-4391-989a-bd39fc933bd7",
       "command": "npx",
       "args": [
         "next",
         "dev",
         "--port",
-        "4107"
-      ],
-      "status": "running",
-      "updatedAt": 1786158479854,
-      "taskId": "11bec1bc-0861-4b86-9a8d-7f7f06006711",
-      "port": 4107,
-      "pid": 13951,
-      "url": "http://localhost:4107"
-    },
-    "fc1821e7-eaf8-4b12-a821-dd96b380416c": {
-      "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/fc1821e7-eaf8-4b12-a821-dd96b380416c",
-      "command": "npx",
-      "args": [
-        "next",
-        "dev",
-        "--port",
-        "4104"
-      ],
-      "status": "running",
-      "updatedAt": 1786159696673,
-      "taskId": "fc1821e7-eaf8-4b12-a821-dd96b380416c",
-      "port": 4104,
-      "pid": 16428,
-      "url": "http://localhost:4104"
-    },
-    "f7045aee-cb93-45c4-8fd2-668ff34d2767": {
-      "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/f7045aee-cb93-45c4-8fd2-668ff34d2767",
-      "command": "npx",
-      "args": [
-        "next",
-        "dev",
-        "--port",
-        "4137"
+        "4160"
       ],
       "status": "failed",
-      "updatedAt": 1786169001339,
-      "taskId": "f7045aee-cb93-45c4-8fd2-668ff34d2767"
+      "updatedAt": 1786207896403,
+      "taskId": "07bdd638-0c16-4391-989a-bd39fc933bd7"
+    },
+    "a7430036-72b8-43c9-82be-fbb738064664": {
+      "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/a7430036-72b8-43c9-82be-fbb738064664",
+      "command": "npx",
+      "args": [
+        "next",
+        "dev",
+        "--port",
+        "4161"
+      ],
+      "status": "running",
+      "updatedAt": 1786208318481,
+      "taskId": "a7430036-72b8-43c9-82be-fbb738064664",
+      "port": 4161,
+      "pid": 60730,
+      "url": "http://localhost:4161"
     }
   }
 }

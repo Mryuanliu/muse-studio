@@ -8,6 +8,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ChatAttachment } from '../sandbox/sandbox-types';
 import { AgentService } from '../agent/agent.service';
+import { v4 as uuidv4 } from 'uuid';
+import { MuseEventNormalizer } from '../events/muse-event.normalizer';
+import { MuseEvent } from '../events/muse-event.types';
 
 export interface AgentRunSubscriber {
   /** Return false when the SSE client is no longer writable. */
@@ -18,12 +21,12 @@ interface NormalizedMessage {
   id?: string;
   role: 'user' | 'assistant';
   content: string;
-  thinkingChain?: string;
-  events?: any[];
+  museEvents?: MuseEvent[];
   attachments?: ChatAttachment[];
 }
 
 interface ActiveRun {
+  runId: string;
   conversationId: string;
   prompt: string;
   attachments: ChatAttachment[];
@@ -35,15 +38,16 @@ interface ActiveRun {
   errorMessage?: string;
   baseMessages: NormalizedMessage[];
   content: string;
-  thinkingChain: string;
-  events: any[];
+  museEvents: MuseEvent[];
+  museSequence: number;
+  reasoningActive: boolean;
   subscribers: Set<AgentRunSubscriber>;
   resolve: () => void;
   donePromise: Promise<void>;
   runtime: AgentRuntimeConfig;
 }
 
-function parseEvents(value: any): any[] {
+function parseJson(value: any): any[] {
   if (!value) return [];
   if (Array.isArray(value)) return value;
   try {
@@ -58,10 +62,14 @@ function normalizeMessage(message: any): NormalizedMessage {
     id: message.id,
     role: message.role,
     content: message.content || '',
-    thinkingChain: message.thinkingChain || undefined,
-    events: parseEvents(message.events),
+    museEvents: parseMuseEvents(message.museEvents),
     attachments: parseAttachments(message.attachments),
   };
+}
+
+function parseMuseEvents(value: any): MuseEvent[] {
+  const parsed = parseJson(value);
+  return parsed as MuseEvent[];
 }
 
 function parseAttachments(value: any): ChatAttachment[] {
@@ -73,25 +81,6 @@ function parseAttachments(value: any): ChatAttachment[] {
   } catch {
     return [];
   }
-}
-
-function compactEvents(events: any[]): any[] {
-  const out: any[] = [];
-  for (const ev of events) {
-    if (ev.type === 'thinking' || ev.type === 'text_chunk') {
-      const content = ev.content || '';
-      if (!content) continue;
-      const last = out[out.length - 1];
-      if (last?.type === ev.type) {
-        last.content = (last.content || '') + content;
-      } else {
-        out.push({ ...ev, content });
-      }
-    } else {
-      out.push(ev);
-    }
-  }
-  return out;
 }
 
 @Injectable()
@@ -106,23 +95,24 @@ export class AgentRunService {
     private readonly preview: PreviewService,
     private readonly askUser: AskUserService,
     private readonly agents: AgentService,
+    private readonly museEvents: MuseEventNormalizer,
   ) {
     this.askUser.subscribe((event) => this.handleAskUserEvent(event));
   }
 
-  private handleAskUserEvent(event: AskUserEvent): void {
+  private async handleAskUserEvent(event: AskUserEvent): Promise<void> {
     const run = this.runs.get(event.conversationId);
     if (!run) return;
-    const index = run.events.findIndex(
-      (item) => item.type === 'ask_user' && item.requestId === event.requestId,
-    );
-    if (index >= 0) {
-      run.events[index] = { ...run.events[index], ...event };
-    } else {
-      run.events.push(event);
-    }
-    void this.persist(run);
-    this.broadcast(run, 'ask_user', event);
+    const museEvent = this.museEvents.lifecycle({
+      type: event.status === 'submitted' ? 'ask_user.resolved' : 'ask_user.requested',
+      runId: run.runId,
+      conversationId: run.conversationId,
+      sequence: ++run.museSequence,
+      payload: event,
+    });
+    run.museEvents.push(museEvent);
+    await this.persist(run);
+    this.broadcast(run, 'muse_event', museEvent);
   }
 
   /** Attach to an active in-memory run, or start/resume a backend run. */
@@ -203,15 +193,19 @@ export class AgentRunService {
       this.logger.warn(`Failed to stop sandbox task for ${conversationId}: ${error.message}`);
     }
 
-    if (!run.events.some((event) => event.type === 'status' && event.subtype === 'stopped')) {
-      run.events.push({
-        type: 'status',
-        content: '⏹ 已停止本轮生成',
-        subtype: 'stopped',
-      });
+    if (run.status === 'stopped') {
       run.content = `${run.content ? run.content + '\n\n' : ''}⏹ 已停止本轮生成`;
       try {
+        const event = this.museEvents.lifecycle({
+          type: 'run.stopped',
+          runId: run.runId,
+          conversationId: run.conversationId,
+          sequence: ++run.museSequence,
+          payload: { message: '已停止本轮生成' },
+        });
+        run.museEvents.push(event);
         await this.persist(run);
+        this.broadcast(run, 'muse_event', event);
       } catch (error: any) {
         this.logger.warn(`Failed to persist stopped run ${conversationId}: ${error.message}`);
       }
@@ -251,7 +245,6 @@ export class AgentRunService {
       const baseAssistant = baseMessages.find((m) => m.id === lastAssistant.id) || {
         role: 'assistant' as const,
         content: '',
-        events: [],
       };
 
       const runtime = await this.runtimeFromConversation(conv);
@@ -263,12 +256,16 @@ export class AgentRunService {
           : ''),
         attachments: parseAttachments(lastUser.attachments),
         assistantMessageId: lastAssistant.id,
-        outputDir: conv.outputDir || this.agentSdk.getLegacyOutputDir(),
+        outputDir: conv.outputDir || this.agentSdk.getOutputDir(conv.id),
         resumeSessionId,
         baseMessages,
         content: baseAssistant.content || '',
-        thinkingChain: baseAssistant.thinkingChain || '',
-        events: compactEvents(baseAssistant.events || []),
+        museEvents: [...(baseAssistant.museEvents || [])],
+        museSequence: (baseAssistant.museEvents || []).reduce(
+          (max, event) => Math.max(max, Number(event.sequence) || 0),
+          0,
+        ),
+        reasoningActive: false,
         runtime,
       });
     }
@@ -285,7 +282,7 @@ export class AgentRunService {
     if (conversationId) {
       const existing = await this.conversation.findOne(conversationId);
       if (existing.agentSnapshot) runtime = await this.runtimeFromConversation(existing);
-      await this.conversation.addMessage(conversationId, 'user', userContent, undefined, undefined, attachments);
+      await this.conversation.addMessage(conversationId, 'user', userContent, attachments);
       if (!existing.agentSnapshot && params.agentId) await this.conversation.setAgentSnapshot(conversationId, runtime);
     } else {
       const conv = await this.conversation.create(userContent, attachments, runtime);
@@ -295,12 +292,7 @@ export class AgentRunService {
     const assistantMsg = await this.conversation.addMessage(conversationId, 'assistant', '');
     await this.conversation.updateRunStatus(conversationId, 'running');
     const conv = await this.conversation.findOne(conversationId);
-    const isLegacyResume = !!conv.sdkSessionId && !conv.outputDir;
-    const outputDir = conv.outputDir || (
-      isLegacyResume
-        ? this.agentSdk.getLegacyOutputDir()
-        : this.agentSdk.getOutputDir(conversationId)
-    );
+    const outputDir = conv.outputDir || this.agentSdk.getOutputDir(conversationId);
     if (!conv.outputDir) {
       await this.conversation.updateOutputDir(conversationId, outputDir);
     }
@@ -314,8 +306,9 @@ export class AgentRunService {
       resumeSessionId: params.resumeSessionId || conv.sdkSessionId,
       baseMessages: conv.messages.map(normalizeMessage),
       content: '',
-      thinkingChain: '',
-      events: [],
+      museEvents: [],
+      museSequence: 0,
+      reasoningActive: false,
       runtime,
     });
   }
@@ -329,8 +322,9 @@ export class AgentRunService {
     resumeSessionId?: string;
     baseMessages: NormalizedMessage[];
     content: string;
-    thinkingChain: string;
-    events: any[];
+    museEvents: MuseEvent[];
+    museSequence: number;
+    reasoningActive: boolean;
     runtime: AgentRuntimeConfig;
   }): ActiveRun {
     let resolve!: () => void;
@@ -340,11 +334,13 @@ export class AgentRunService {
 
     return {
       ...input,
+      runId: uuidv4(),
       attachments: input.attachments || [],
       status: 'running',
       subscribers: new Set(),
       resolve,
       donePromise,
+      reasoningActive: input.reasoningActive,
       runtime: input.runtime,
     };
   }
@@ -363,21 +359,23 @@ export class AgentRunService {
           mcpServers: snapshot.mcpServers || {},
         };
       } catch {
-        // Fall through to the current platform defaults for malformed legacy data.
+        // Fall through to the current platform defaults for malformed snapshots.
       }
     }
     return this.agents.runtime();
   }
 
   private sendSnapshot(run: ActiveRun, subscriber: AgentRunSubscriber): void {
-    const messages = run.baseMessages.map((m) => ({ ...m, events: m.events ? [...m.events] : [] }));
+    const messages = run.baseMessages.map((m) => ({
+      ...m,
+      museEvents: m.museEvents ? [...m.museEvents] : [],
+    }));
     const current = messages.findIndex((m) => m.id === run.assistantMessageId);
     if (current >= 0) {
       messages[current] = {
         ...messages[current],
         content: run.content || messages[current].content,
-        thinkingChain: run.thinkingChain || messages[current].thinkingChain,
-        events: compactEvents(run.events),
+        museEvents: [...run.museEvents],
       };
     }
 
@@ -391,267 +389,82 @@ export class AgentRunService {
   }
 
   private async execute(run: ActiveRun): Promise<void> {
-    run.events = compactEvents(run.events);
+    this.emitMuseLifecycle(run, 'run.started', { prompt: run.prompt });
+    await this.persist(run);
     try {
-      for await (const chunk of this.agentSdk.run(
-        run.prompt,
-        run.resumeSessionId,
-        run.conversationId,
-        run.outputDir,
-        run.attachments,
-        run.runtime,
-      )) {
-        switch (chunk.type) {
-          case 'session':
-            run.sdkSessionId = chunk.sessionId;
-            if (run.sdkSessionId && run.conversationId) {
-              await this.conversation.updateSdkSessionId(run.conversationId, run.sdkSessionId);
-            }
-            this.broadcast(run, 'meta', {
-              conversationId: run.conversationId,
-              messageId: run.assistantMessageId,
-              sdkSessionId: run.sdkSessionId,
-              outputDir: run.outputDir,
-            });
-            break;
-          case 'thinking':
-            run.thinkingChain += chunk.content || '';
-            this.appendEvent(run, { type: 'thinking', content: chunk.content });
+      for await (const chunk of this.agentSdk.run(run.prompt, run.resumeSessionId, run.conversationId, run.outputDir, run.attachments, run.runtime)) {
+        if (chunk.type === 'thinking' && !run.reasoningActive) {
+          run.reasoningActive = true;
+          this.emitMuseLifecycle(run, 'reasoning.started', {});
+        } else if (chunk.type !== 'thinking' && run.reasoningActive) {
+          run.reasoningActive = false;
+          this.emitMuseLifecycle(run, 'reasoning.completed', {});
+        }
+
+        if (chunk.type === 'session') {
+          run.sdkSessionId = chunk.sessionId;
+          if (run.sdkSessionId) await this.conversation.updateSdkSessionId(run.conversationId, run.sdkSessionId);
+          this.broadcast(run, 'meta', { conversationId: run.conversationId, messageId: run.assistantMessageId, sdkSessionId: run.sdkSessionId, outputDir: run.outputDir });
+        }
+        if (chunk.type === 'text') run.content += chunk.content || '';
+
+        const normalized = this.museEvents.normalize(chunk, {
+          runId: run.runId,
+          conversationId: run.conversationId,
+          sequence: ++run.museSequence,
+        });
+        if (normalized) {
+          run.museEvents.push(normalized);
+          this.broadcast(run, 'muse_event', normalized);
+        }
+        await this.persist(run);
+
+        if (chunk.type === 'tool_end' && ['Write', 'Edit'].includes(chunk.toolName || '') && this.preview.getUrl(run.conversationId)) {
+          this.realtime.emitToConversation(run.conversationId, 'preview', { status: 'updated' });
+        }
+        if (chunk.type === 'mcp_call' && chunk.status === 'result' && chunk.serverName === 'preview' && (chunk.output as any)?.url) {
+          const output = chunk.output as any;
+          this.preview.setUrl(run.conversationId, output.url, output.port, chunk.input?.project_path);
+          this.realtime.emitToConversation(run.conversationId, 'preview', {
+            status: 'ready',
+            url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3001'}/preview/${run.conversationId}`,
+            port: output.port,
+            projectPath: chunk.input?.project_path,
+          });
+        }
+
+        if (chunk.type === 'done') {
+          if (chunk.resultStatus && chunk.resultStatus !== 'success') {
+            run.status = 'error';
+            run.errorMessage = chunk.resultErrors?.join('; ') || `Agent ended with ${chunk.resultStatus}`;
+            this.emitMuseLifecycle(run, 'run.failed', { message: run.errorMessage });
             await this.persist(run);
-            this.broadcast(run, 'thinking', { content: chunk.content });
-            break;
-          case 'text':
-            run.content += chunk.content || '';
-            this.appendEvent(run, { type: 'text_chunk', content: chunk.content });
-            await this.persist(run);
-            this.broadcast(run, 'text', { content: chunk.content });
-            break;
-          case 'tool_start':
-            run.events.push({
-              type: 'tool_start',
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              toolInput: chunk.toolInput,
-            });
-            await this.persist(run);
-            this.broadcast(run, 'tool_start', {
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              toolInput: chunk.toolInput,
-            });
-            break;
-          case 'tool_update':
-            run.events.push({
-              type: 'tool_update',
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              toolInput: chunk.toolInput,
-            });
-            await this.persist(run);
-            this.broadcast(run, 'tool_update', {
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              toolInput: chunk.toolInput,
-            });
-            break;
-          case 'tool_progress':
-            run.events.push({
-              type: 'tool_progress',
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              status: chunk.subtype,
-              taskId: chunk.taskId,
-              parentToolUseId: chunk.parentToolUseId,
-            });
-            await this.persist(run);
-            this.broadcast(run, 'tool_progress', {
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              status: chunk.subtype,
-              taskId: chunk.taskId,
-              parentToolUseId: chunk.parentToolUseId,
-            });
-            break;
-          case 'tool_end':
-            run.events.push({
-              type: 'tool_end',
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              toolInput: chunk.toolInput,
-              toolResult: chunk.toolResult,
-            });
-            await this.persist(run);
-            this.broadcast(run, 'tool_end', {
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              toolInput: chunk.toolInput,
-              toolResult: chunk.toolResult,
-            });
-            if (
-              (chunk.toolName === 'Write' || chunk.toolName === 'Edit') &&
-              this.preview.getUrl(run.conversationId)
-            ) {
-              this.realtime.emitToConversation(run.conversationId, 'preview', {
-                status: 'updated',
-              });
-            }
-            break;
-          case 'skill_load':
-            run.events.push({
-              type: 'skill_load',
-              skillName: chunk.skillName,
-              status: chunk.status,
-            });
-            await this.persist(run);
-            this.broadcast(run, 'skill_load', {
-              skillName: chunk.skillName,
-              status: chunk.status,
-            });
-            break;
-          case 'skill_invoke':
-            run.events.push({
-              type: 'skill_invoke',
-              skillName: chunk.skillName,
-              toolId: chunk.toolId,
-              status: chunk.status,
-              input: chunk.input,
-              output: chunk.output,
-            });
-            await this.persist(run);
-            this.broadcast(run, 'skill_invoke', {
-              skillName: chunk.skillName,
-              toolId: chunk.toolId,
-              status: chunk.status,
-              input: chunk.input,
-              output: chunk.output,
-            });
-            break;
-          case 'mcp_status':
-            run.events.push({
-              type: 'mcp_status',
-              serverName: chunk.serverName,
-              status: chunk.status,
-            });
-            await this.persist(run);
-            this.broadcast(run, 'mcp_status', {
-              serverName: chunk.serverName,
-              status: chunk.status,
-            });
-            break;
-          case 'mcp_call':
-            run.events.push({
-              type: 'mcp_call',
-              serverName: chunk.serverName,
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              status: chunk.status,
-              input: chunk.input,
-              output: chunk.output,
-            });
-            await this.persist(run);
-            this.broadcast(run, 'mcp_call', {
-              serverName: chunk.serverName,
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              status: chunk.status,
-              input: chunk.input,
-              output: chunk.output,
-            });
-            if (
-              chunk.status === 'result' &&
-              chunk.serverName === 'preview' &&
-              (chunk.output as any)?.url
-            ) {
-              const targetUrl = (chunk.output as any).url as string;
-              this.preview.setUrl(
-                run.conversationId,
-                targetUrl,
-                (chunk.output as any).port,
-                (chunk.input as any)?.project_path,
-              );
-              this.realtime.emitToConversation(run.conversationId, 'preview', {
-                status: 'ready',
-                url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3001'}/preview/${run.conversationId}`,
-                port: (chunk.output as any).port,
-                projectPath: (chunk.input as any)?.project_path,
-              });
-            }
-            break;
-          case 'status':
-            run.events.push({ type: 'status', content: chunk.content, subtype: chunk.subtype });
-            await this.persist(run);
-            this.broadcast(run, 'status', { content: chunk.content, subtype: chunk.subtype });
-            break;
-          case 'command_output':
-            run.events.push({ type: 'command_output', content: chunk.content });
-            await this.persist(run);
-            this.broadcast(run, 'command_output', { content: chunk.content });
-            break;
-          case 'subagent_start':
-          case 'subagent_progress':
-          case 'subagent_end': {
-            const event = {
-              type: chunk.type,
-              taskId: chunk.taskId,
-              toolId: chunk.toolId,
-              parentToolUseId: chunk.parentToolUseId,
-              description: chunk.description,
-              subagentType: chunk.subagentType,
-              summary: chunk.summary,
-              outputFile: chunk.outputFile,
-              status: chunk.status,
-              taskUsage: chunk.taskUsage,
-            };
-            run.events.push(event);
-            await this.persist(run);
-            this.broadcast(run, chunk.type, event);
-            break;
+            await this.conversation.updateRunStatus(run.conversationId, 'error');
+            this.broadcast(run, 'error', { message: run.errorMessage });
+            return;
           }
-          case 'done':
-            run.status = 'completed';
-            if (!this.preview.getUrl(run.conversationId)) {
-              const match = run.content.match(/https?:\/\/localhost:\d+/);
-              if (match) {
-                this.preview.setUrl(run.conversationId, match[0], Number(new URL(match[0]).port), run.outputDir);
-                this.realtime.emitToConversation(run.conversationId, 'preview', {
-                  status: 'ready',
-                url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3001'}/preview/${run.conversationId}`,
-                  port: Number(new URL(match[0]).port),
-                  projectPath: run.outputDir,
-                });
-              }
-            }
-            await this.finish(run);
-            this.broadcast(run, 'done', { messageId: run.assistantMessageId, usage: chunk.usage });
-            return;
-          case 'stopped':
-            if (run.status !== 'stopped') {
-              run.status = 'stopped';
-              run.events.push({
-                type: 'status',
-                content: '⏹ 已停止本轮生成',
-                subtype: 'stopped',
-              });
-              run.content = `${run.content ? run.content + '\n\n' : ''}⏹ 已停止本轮生成`;
-              await this.persist(run);
-              this.broadcast(run, 'stopped', { message: '已停止本轮生成' });
-            }
-            await this.conversation.updateRunStatus(run.conversationId, 'idle');
-            return;
+          run.status = 'completed';
+          if (!run.content.trim()) run.content = '任务已完成，但模型未返回文字总结。';
+          this.emitMuseLifecycle(run, 'message.completed', { content: run.content });
+          this.emitMuseLifecycle(run, 'run.completed', { summary: run.content, summarySource: 'model' });
+          await this.finish(run);
+          this.broadcast(run, 'done', { messageId: run.assistantMessageId, usage: chunk.usage, content: run.content });
+          return;
+        }
+        if (chunk.type === 'stopped') {
+          run.status = 'stopped';
+          this.emitMuseLifecycle(run, 'run.stopped', { message: '已停止本轮生成' });
+          await this.persist(run);
+          await this.conversation.updateRunStatus(run.conversationId, 'idle');
+          this.broadcast(run, 'stopped', { message: '已停止本轮生成' });
+          return;
         }
       }
     } catch (error: any) {
       if (run.status === 'stopped' || error?.name === 'AbortError' || /abort|closed/i.test(error?.message || '')) {
-        if (run.status !== 'stopped') {
-          run.status = 'stopped';
-          run.events.push({
-            type: 'status',
-            content: '⏹ 已停止本轮生成',
-            subtype: 'stopped',
-          });
-          run.content = `${run.content ? run.content + '\n\n' : ''}⏹ 已停止本轮生成`;
-          await this.persist(run);
-        }
+        run.status = 'stopped';
+        this.emitMuseLifecycle(run, 'run.stopped', { message: '已停止本轮生成' });
+        await this.persist(run);
         await this.conversation.updateRunStatus(run.conversationId, 'idle');
         this.broadcast(run, 'stopped', { message: '已停止本轮生成' });
         return;
@@ -659,15 +472,11 @@ export class AgentRunService {
       this.logger.error(`Agent run failed for ${run.conversationId}:`, error.message);
       run.status = 'error';
       run.errorMessage = error.message || 'Agent run error';
-      run.events.push({ type: 'status', content: `❌ ${run.errorMessage}`, subtype: 'error' });
-      run.content = `${run.content ? run.content + '\n\n' : ''}❌ ${run.errorMessage}`;
-      try {
-        await this.persist(run);
-        await this.conversation.updateRunStatus(run.conversationId, 'error');
-      } catch (persistError: any) {
-        this.logger.error(`Failed to persist errored run ${run.conversationId}:`, persistError.message);
-      }
-      this.broadcast(run, 'error', { message: error.message || 'Agent run error' });
+      run.content = `${run.content ? `${run.content}\n\n` : ''}❌ ${run.errorMessage}`;
+      this.emitMuseLifecycle(run, 'run.failed', { message: run.errorMessage });
+      await this.persist(run);
+      await this.conversation.updateRunStatus(run.conversationId, 'error');
+      this.broadcast(run, 'error', { message: run.errorMessage });
     } finally {
       run.resolve();
     }
@@ -677,21 +486,24 @@ export class AgentRunService {
     await this.conversation.updateMessage(
       run.assistantMessageId,
       run.content,
-      run.thinkingChain,
-      run.events,
+      run.museEvents,
     );
   }
 
-  private appendEvent(run: ActiveRun, ev: any): void {
-    if (ev.type === 'thinking' || ev.type === 'text_chunk') {
-      const content = ev.content || '';
-      const last = run.events[run.events.length - 1];
-      if (last?.type === ev.type) {
-        last.content = (last.content || '') + content;
-        return;
-      }
-    }
-    run.events.push(ev);
+  private emitMuseLifecycle(
+    run: ActiveRun,
+    type: 'run.started' | 'run.completed' | 'run.failed' | 'run.stopped' | 'reasoning.started' | 'reasoning.completed' | 'message.completed' | 'ask_user.requested' | 'ask_user.resolved',
+    payload: unknown,
+  ): void {
+    const event = this.museEvents.lifecycle({
+      type,
+      runId: run.runId,
+      conversationId: run.conversationId,
+      sequence: ++run.museSequence,
+      payload,
+    });
+    run.museEvents.push(event);
+    this.broadcast(run, 'muse_event', event);
   }
 
   private async finish(run: ActiveRun): Promise<void> {
@@ -699,8 +511,9 @@ export class AgentRunService {
     await this.conversation.updateRunStatus(run.conversationId, 'completed');
 
     const outputDir = path.resolve(run.outputDir);
-    for (const ev of run.events) {
-      const fp = ev.toolInput?.file_path || ev.toolInput?.path;
+    for (const ev of run.museEvents) {
+      const payload = ev.payload as any;
+      const fp = payload?.toolInput?.file_path || payload?.toolInput?.path;
       if (fp && typeof fp === 'string' && /\.html?$/i.test(fp)) {
         let outputFile = fp;
         const absolute = path.resolve(outputDir, fp);

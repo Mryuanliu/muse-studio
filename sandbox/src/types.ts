@@ -23,6 +23,8 @@ export interface AgentChunk {
   summary?: string;
   outputFile?: string;
   taskUsage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
+  resultStatus?: string;
+  resultErrors?: string[];
 }
 
 export interface ChatAttachment {
@@ -45,5 +47,6 @@ export interface SandboxConfig {
   systemPrompt?: string;
   agentId?: string;
   agentType?: 'codegen' | 'other';
+  enableSubagents?: boolean;
   mcpServers?: Record<string, { type?: 'http' | 'stdio'; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string>; timeout?: number }>;
 }

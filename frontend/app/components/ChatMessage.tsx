@@ -12,6 +12,7 @@ import {
   DownOutlined,
   FileOutlined,
   FolderOpenOutlined,
+  InfoCircleOutlined,
   LoadingOutlined,
   QuestionCircleOutlined,
   ReadOutlined,
@@ -108,97 +109,9 @@ function coalesceEvents(events: EventLog[]): EventLog[] {
   return out;
 }
 
-/**
- * Older messages only persisted thinkingChain + tool events. Split the chain
- * into likely per-turn segments so those tasks still read as an interleaved
- * sequence instead of one giant thinking block.
- */
-function splitLegacyThinking(chain?: string, desiredSegments = 1): string[] {
-  const text = chain?.trim();
-  if (!text) return [];
-
-  const paragraphs: string[] = text
-    .split(/\n\s*\n+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  if (paragraphs.length <= 1) {
-    const parts = text
-      .split(/(?=(?:Let me|I['’]?m\b|I['’]?ll\b|The file|The game|Game is done|Now |Next |Finally |After |Before |However ))/i)
-      .map((part) => part.trim())
-      .filter(Boolean);
-    if (parts.length > 1) return parts;
-    return [text];
-  }
-
-  // Some legacy chains are a single long paragraph containing several turns.
-  // Split the longest block at a clear intent boundary until we have enough
-  // blocks to place one thought before each persisted tool call.
-  const intentBoundaries = [
-    'The file path issue',
-    "I'm on macOS",
-    'The game has been',
-    'Game is done',
-    'Let me write the file',
-  ];
-  while (paragraphs.length < desiredSegments) {
-    const longestIndex = paragraphs.reduce(
-      (best, part, index) => part.length > paragraphs[best].length ? index : best,
-      0,
-    );
-    const longest = paragraphs[longestIndex];
-    if (longest.length < 120) break;
-
-    const boundary = intentBoundaries.find((marker) => {
-      const at = longest.indexOf(marker);
-      return at > 30 && at < longest.length - 40;
-    });
-    if (!boundary) break;
-
-    const at = longest.indexOf(boundary);
-    paragraphs.splice(
-      longestIndex,
-      1,
-      longest.slice(0, at).trim(),
-      longest.slice(at).trim(),
-    );
-  }
-
-  return paragraphs.filter(Boolean);
-}
-
-/**
- * Build the display order for an assistant message. New records carry
- * thinking/text events already; legacy records are reconstructed from
- * thinkingChain + content around the persisted tool events.
- */
+/** Build the display order from the canonical, sequence-ordered view events. */
 function buildChronologicalEvents(message: ChatMessageType): EventLog[] {
-  const raw = message.events || [];
-  const hasInlineContent = raw.some(
-    (ev) => ev.type === 'thinking' || ev.type === 'text_chunk',
-  );
-  if (hasInlineContent) return coalesceEvents(raw);
-
-  const toolStartCount = raw.filter((ev) => ev.type === 'tool_start').length;
-  const legacyThoughts = splitLegacyThinking(message.thinkingChain, toolStartCount);
-  const events: EventLog[] = [];
-  let thoughtIndex = 0;
-
-  for (const ev of raw) {
-    if (ev.type === 'tool_start' && thoughtIndex < legacyThoughts.length) {
-      events.push({ type: 'thinking', content: legacyThoughts[thoughtIndex++] });
-    }
-    events.push(ev);
-  }
-
-  while (thoughtIndex < legacyThoughts.length) {
-    events.push({ type: 'thinking', content: legacyThoughts[thoughtIndex++] });
-  }
-
-  if (message.content?.trim()) {
-    events.push({ type: 'text_chunk', content: message.content });
-  }
-
-  return coalesceEvents(events);
+  return coalesceEvents(message.events || []);
 }
 
 interface ToolGroup {
@@ -220,6 +133,19 @@ interface RuntimeGroup {
   events: EventLog[];
 }
 
+interface SubagentGroup {
+  kind: 'subagent';
+  id: string;
+  taskId?: string;
+  toolId?: string;
+  subagentType?: string;
+  description?: string;
+  status: string;
+  summary?: string;
+  updates: EventLog[];
+  lastIndex: number;
+}
+
 interface TaskActivity {
   kind: 'task';
   id: string;
@@ -228,7 +154,7 @@ interface TaskActivity {
   status: 'pending' | 'in_progress' | 'completed' | 'deleted';
 }
 
-type DisplayEvent = EventLog | ToolGroup | RuntimeGroup | TaskActivity;
+type DisplayEvent = EventLog | ToolGroup | RuntimeGroup | SubagentGroup | TaskActivity;
 
 function isToolEvent(ev: EventLog) {
   return ev.type === 'tool_start' || ev.type === 'tool_update' || ev.type === 'tool_end'
@@ -237,6 +163,10 @@ function isToolEvent(ev: EventLog) {
 
 function isRuntimeEvent(ev: EventLog) {
   return ev.type === 'skill_load' || ev.type === 'mcp_status';
+}
+
+function isSubagentEvent(ev: EventLog) {
+  return ev.type === 'subagent_start' || ev.type === 'subagent_progress' || ev.type === 'subagent_end';
 }
 
 function isTaskEvent(ev: EventLog) {
@@ -248,9 +178,11 @@ function isTaskEvent(ev: EventLog) {
 function groupToolEvents(events: EventLog[], isStreaming: boolean): DisplayEvent[] {
   const display: DisplayEvent[] = [];
   const groups = new Map<string, ToolGroup>();
+  const subagents = new Map<string, SubagentGroup>();
   const tasks = new Map<string, TaskActivity>();
   const createIds = new Map<string, string>();
   let taskCounter = 0;
+  let lastSubagentKey: string | undefined;
   let runtime: RuntimeGroup | undefined;
 
   const flushRuntime = () => {
@@ -265,6 +197,38 @@ function groupToolEvents(events: EventLog[], isStreaming: boolean): DisplayEvent
       return;
     }
     flushRuntime();
+    if (isSubagentEvent(ev)) {
+      // SDK emits both lifecycle events and forwarded progress text. Merge
+      // them by tool/task identity so one sub-agent occupies one timeline row.
+      const key = ev.taskId || ev.toolId || ev.parentToolUseId || lastSubagentKey || `anonymous:${index}`;
+      let group = subagents.get(key);
+      if (!group) {
+        group = {
+          kind: 'subagent',
+          id: `subagent:${key}`,
+          taskId: ev.taskId,
+          toolId: ev.toolId,
+          subagentType: ev.subagentType,
+          description: ev.description,
+          status: ev.status || 'running',
+          summary: ev.summary,
+          updates: [],
+          lastIndex: index,
+        };
+        subagents.set(key, group);
+        display.push(group);
+      }
+      group.taskId = ev.taskId || group.taskId;
+      group.toolId = ev.toolId || group.toolId;
+      group.subagentType = ev.subagentType || group.subagentType;
+      group.description = ev.description || group.description;
+      group.summary = ev.summary || group.summary;
+      group.status = ev.status || group.status;
+      group.lastIndex = index;
+      if (ev.summary || ev.description) group.updates.push(ev);
+      lastSubagentKey = key;
+      return;
+    }
     if (isTaskEvent(ev)) {
       const input = ev.toolInput || {};
       if (ev.toolName === 'TaskCreate') {
@@ -532,6 +496,7 @@ function EventItem({
 
   if ('kind' in ev) {
     if (ev.kind === 'task') return <TaskActivityRow task={ev} />;
+    if (ev.kind === 'subagent') return <SubagentPanel group={ev} />;
     return ev.kind === 'runtime'
       ? <RuntimePanel group={ev} />
       : <ToolCallPanel group={ev} isStreaming={isStreaming} />;
@@ -592,8 +557,8 @@ function EventItem({
 
     case 'status':
       return (
-        <div className="activity-note activity-success">
-          <CheckCircleOutlined />
+        <div className={`activity-note ${ev.subtype === 'thinking_unavailable' ? 'activity-muted' : ev.subtype === 'error' ? 'activity-error' : 'activity-success'}`}>
+          {ev.subtype === 'thinking_unavailable' ? <InfoCircleOutlined /> : ev.subtype === 'error' ? <QuestionCircleOutlined /> : <CheckCircleOutlined />}
           <span>{ev.content}</span>
         </div>
       );
@@ -627,6 +592,60 @@ function EventItem({
     default:
       return null;
   }
+}
+
+function SubagentPanel({ group }: { group: SubagentGroup }) {
+  const [activeKey, setActiveKey] = useState<string[]>([]);
+  const failed = ['failed', 'stopped', 'killed', 'error'].includes(group.status);
+  const completed = ['completed', 'success', 'done'].includes(group.status);
+  const status = failed ? '失败' : completed ? '已完成' : '进行中';
+  const statusClass = failed ? 'tool-status-error' : completed ? 'tool-status-done' : 'tool-status-running';
+  const title = group.subagentType || '子代理';
+  const summary = (group.summary || group.description || '正在处理任务').replace(/\s+/g, ' ').trim();
+  const compactSummary = summary.length > 96 ? `${summary.slice(0, 93)}...` : summary;
+
+  return (
+    <Collapse
+      className={`subagent-collapse ${failed ? 'is-failed' : ''}`}
+      activeKey={activeKey}
+      onChange={(key) => setActiveKey(Array.isArray(key) ? key : [key])}
+      expandIcon={({ isActive }) => (
+        <DownOutlined className={`tool-chevron ${isActive ? 'is-open' : ''}`} />
+      )}
+      items={[{
+        key: 'details',
+        label: (
+          <div className="subagent-heading">
+            <span className="subagent-icon"><FolderOpenOutlined /></span>
+            <span className="subagent-title">{title}</span>
+            <span className="subagent-summary" title={summary}>{compactSummary}</span>
+            <span className={`tool-call-status ${statusClass}`}>
+              {failed ? <QuestionCircleOutlined /> : completed ? <CheckCircleOutlined /> : <LoadingOutlined spin />}
+              {status}
+            </span>
+          </div>
+        ),
+        children: (
+          <div className="subagent-details">
+            <div className="subagent-meta">
+              <span>{group.description || '子代理执行过程'}</span>
+              <span>{group.updates.length} 条进度</span>
+            </div>
+            {group.updates.length > 0 && (
+              <div className="subagent-updates">
+                {group.updates.slice(-8).map((update, index) => (
+                  <div className="subagent-update" key={`${update.type}-${index}`}>
+                    <span className="subagent-update-dot" />
+                    <span>{update.summary || update.description || '已更新执行状态'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ),
+      }]}
+    />
+  );
 }
 
 export default function ChatMessage({ message, isStreaming, onAskUserSubmit }: Props) {

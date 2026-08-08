@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import { Avatar, Button, Select, Tooltip, Upload, message } from 'antd';
 import type { UploadProps } from 'antd';
 import { PaperClipOutlined, RobotOutlined, SendOutlined } from '@ant-design/icons';
@@ -11,7 +11,7 @@ import { ChatAttachment } from '../hooks/useChatSSE';
 const API = 'http://localhost:3001';
 type AgentOption = { id: string; code: string; name: string; type: 'codegen' | 'other'; description?: string };
 
-export default function ConversationsPage() {
+function ConversationsContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const queryAgentId = searchParams.get('agentId') || undefined;
@@ -140,4 +140,12 @@ export default function ConversationsPage() {
       </footer>
     </div>
   </AdminShell>;
+}
+
+export default function ConversationsPage() {
+  return (
+    <Suspense fallback={<AdminShell><div className="conversation-shell" /></AdminShell>}>
+      <ConversationsContent />
+    </Suspense>
+  );
 }

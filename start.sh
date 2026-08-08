@@ -28,15 +28,15 @@ echo -e "${YELLOW}[2/5] 检查环境变量...${NC}"
 ENV_FILE="$ROOT_DIR/backend/.env"
 if [ ! -f "$ENV_FILE" ]; then
   echo -e "${RED}  ✗ 未找到 $ENV_FILE${NC}"
-  echo -e "${YELLOW}    请创建文件并填入 DEEPSEEK_API_KEY:${NC}"
-  echo "    echo 'DEEPSEEK_API_KEY=sk-xxx' > $ENV_FILE"
+  echo -e "${YELLOW}    请创建文件并填入 AI_API_KEY:${NC}"
+  echo "    echo 'AI_API_KEY=your-api-key' > $ENV_FILE"
   exit 1
 fi
 # 检查是否填了真正的 key（不是占位符）
-KEY=$(grep DEEPSEEK_API_KEY "$ENV_FILE" | cut -d= -f2)
-if [ -z "$KEY" ] || [ "$KEY" = "sk-your-deepseek-api-key-here" ]; then
-  echo -e "${RED}  ✗ DEEPSEEK_API_KEY 未设置或为占位值${NC}"
-  echo -e "${YELLOW}    请在 $ENV_FILE 中填入你的 DeepSeek API Key${NC}"
+KEY=$(grep -E '^(AI_API_KEY|DEEPSEEK_API_KEY)=' "$ENV_FILE" | tail -n 1 | cut -d= -f2-)
+if [ -z "$KEY" ] || [ "$KEY" = "your-api-key" ] || [ "$KEY" = "sk-your-deepseek-api-key-here" ]; then
+  echo -e "${RED}  ✗ AI_API_KEY 未设置或为占位值${NC}"
+  echo -e "${YELLOW}    请在 $ENV_FILE 中填入你的 Team Router API Key${NC}"
   exit 1
 fi
 echo -e "${GREEN}  ✓ 环境变量就绪${NC}"

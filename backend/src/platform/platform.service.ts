@@ -23,7 +23,6 @@ export class PlatformService {
   private readonly logger = new Logger(PlatformService.name);
   private readonly skillsRoot = path.resolve(__dirname, '../../../skills');
   private readonly mcpRoot = path.resolve(__dirname, '../../../sandbox/mcp');
-  private readonly stateFile = path.resolve(__dirname, '../../data/platform-state.json');
 
   constructor(
     @InjectRepository(Skill) private readonly skillRepo: Repository<Skill>,
@@ -49,13 +48,12 @@ export class PlatformService {
   private async syncDiskSkills(): Promise<void> {
     if (!fs.existsSync(this.skillsRoot)) return;
     const existing = new Map((await this.skillRepo.find()).map((item) => [item.name, item]));
-    const state = this.readLegacyState();
     for (const entry of fs.readdirSync(this.skillsRoot, { withFileTypes: true }).filter((item) => item.isDirectory())) {
       const skillPath = path.join(this.skillsRoot, entry.name);
       const meta = this.readSkillMeta(skillPath);
       const name = meta.name || entry.name;
       if (!existing.has(name)) {
-        await this.skillRepo.save(this.skillRepo.create({ name, description: meta.description || '', path: skillPath, builtin: true, enabled: state.skills[name] ?? true }));
+        await this.skillRepo.save(this.skillRepo.create({ name, description: meta.description || '', path: skillPath, builtin: true, enabled: true }));
       } else {
         const item = existing.get(name)!;
         if (!item.path) await this.skillRepo.update(item.id, { path: skillPath });
@@ -275,18 +273,9 @@ export class PlatformService {
     for (const def of defs) {
       if (!(await this.mcpRepo.findOne({ where: { name: def.name } }))) {
         const script = fs.existsSync(path.join(this.mcpRoot, `${def.name}-server.mjs`)) ? fs.readFileSync(path.join(this.mcpRoot, `${def.name}-server.mjs`), 'utf8') : '';
-        const state = this.readLegacyState();
-        await this.mcpRepo.save(this.mcpRepo.create({ ...def, tools: JSON.stringify(def.tools), args: JSON.stringify([`${def.name}-server.mjs`]), env: '{}', command: 'node', serverScript: script, builtin: true, enabled: state.mcps[def.name] ?? true }));
+        await this.mcpRepo.save(this.mcpRepo.create({ ...def, tools: JSON.stringify(def.tools), args: JSON.stringify([`${def.name}-server.mjs`]), env: '{}', command: 'node', serverScript: script, builtin: true, enabled: true }));
       }
     }
   }
 
-  private readLegacyState(): { skills: Record<string, boolean>; mcps: Record<string, boolean> } {
-    try {
-      const value = JSON.parse(fs.readFileSync(this.stateFile, 'utf8'));
-      return { skills: value.skills || {}, mcps: value.mcps || {} };
-    } catch {
-      return { skills: {}, mcps: {} };
-    }
-  }
 }

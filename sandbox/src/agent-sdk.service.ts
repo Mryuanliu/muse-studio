@@ -228,6 +228,10 @@ export class AgentSdkService {
     let sdkSessionId: string | undefined;
     let sessionYielded = false;
     const enabledSkills = this.syncSkills();
+    const enableSubagents = this.config.enableSubagents ?? process.env.ENABLE_SUBAGENTS === 'true';
+    const subagentInstructions = enableSubagents
+      ? '当前已开启子代理能力。仅在任务确实需要并行分工时使用 Agent/Task，简单任务直接完成。'
+      : '当前为测试模式，禁止调用 Agent/Task，也不要启动任何子代理；由当前主 Agent 直接完成任务。';
 
     const makeQuery = (resume?: string) => query({
       prompt: this.imagePrompt(prompt, attachments) as any,
@@ -240,35 +244,25 @@ export class AgentSdkService {
         cwd: this.outputDir,
         tools: { type: 'preset', preset: 'claude_code' },
         abortController: this.abortController,
-        // Max API round-trips (model → tool_use → tool_result → model...).
+        // Max API round-trips (model -> tool_use -> tool_result -> model...).
         // Each Write/Bash/Read call counts as one turn. Override via MAX_TURNS env.
-        maxTurns: parseInt(process.env.MAX_TURNS || '100', 10),
+        maxTurns: parseInt(process.env.MAX_TURNS || '40', 10),
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
-        canUseTool: async (toolName, input, options) => {
-          if (toolName !== 'AskUserQuestion') {
-            return { behavior: 'allow' as const };
-          }
-          const answer = await this.waitForUserAnswer(input, options);
-          return {
-            behavior: 'allow' as const,
-            updatedInput: {
-              ...input,
-              answers: answer.answers || {},
-              ...(answer.response ? { response: answer.response } : {}),
-              ...(answer.annotations ? { annotations: answer.annotations } : {}),
-            },
-          };
-        },
         includePartialMessages: true,
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
-          append: [PAGE_SYSTEM_PROMPT, this.config.systemPrompt].filter(Boolean).join('\n\n'),
+          append: [PAGE_SYSTEM_PROMPT, subagentInstructions, this.config.systemPrompt].filter(Boolean).join('\n\n'),
         },
-        agents: SANDBOX_AGENTS,
-        forwardSubagentText: true,
-        agentProgressSummaries: true,
+        ...(enableSubagents ? {
+          agents: SANDBOX_AGENTS,
+          forwardSubagentText: true,
+          agentProgressSummaries: true,
+        } : {
+          forwardSubagentText: false,
+          agentProgressSummaries: false,
+        }),
         toolConfig: {
           askUserQuestion: { previewFormat: 'html' },
         },
@@ -340,6 +334,35 @@ export class AgentSdkService {
                 },
               ],
             },
+            {
+              // bypassPermissions skips canUseTool, so AskUserQuestion must
+              // pause from a PreToolUse hook instead of a permission callback.
+              matcher: 'AskUserQuestion',
+              hooks: [
+                async (input: any, toolUseID: string | undefined, options: { signal: AbortSignal }) => {
+                  const toolInput = input.tool_input || {};
+                  const requestId = toolUseID || `${this.config.conversationId || this.config.previewTaskId || 'conversation'}:ask-user`;
+                  const answer = await this.waitForUserAnswer(toolInput, {
+                    requestId,
+                    toolUseID: toolUseID || requestId,
+                    signal: options.signal,
+                  });
+                  return {
+                    continue: true,
+                    hookSpecificOutput: {
+                      hookEventName: 'PreToolUse' as const,
+                      permissionDecision: 'allow' as const,
+                      updatedInput: {
+                        ...toolInput,
+                        answers: answer.answers || {},
+                        ...(answer.response ? { response: answer.response } : {}),
+                        ...(answer.annotations ? { annotations: answer.annotations } : {}),
+                      },
+                    },
+                  };
+                },
+              ],
+            },
           ],
         },
         ...(resume ? { resume } : {}),
@@ -367,6 +390,8 @@ export class AgentSdkService {
       const toolBlocks = new Map<string, { name: string; id: string; args: string }>();
       const completedTools = new Map<string, { name: string; serverName?: string; skillName?: string; input?: any }>();
       const toolKey = (ev: any) => ev.index != null ? `idx:${ev.index}` : `id:${ev.content_block?.id || ''}`;
+      let streamedText = '';
+      let resultReceived = false;
 
       for await (const msg of q) {
         // Capture session ID from any message
@@ -522,7 +547,10 @@ export class AgentSdkService {
             if (ev.type === 'content_block_delta') {
               const d = ev.delta;
               if (d?.type === 'thinking_delta' && d.thinking) yield { type: 'thinking', content: d.thinking };
-              if (d?.type === 'text_delta' && d.text) yield { type: 'text', content: d.text };
+              if (d?.type === 'text_delta' && d.text) {
+                streamedText += d.text;
+                yield { type: 'text', content: d.text };
+              }
               // Accumulate tool input arguments from streaming JSON
               if (d?.type === 'input_json_delta') {
                 const block = toolBlocks.get(toolKey(ev));
@@ -606,7 +634,22 @@ export class AgentSdkService {
           // ── Result ──
           case 'result': {
             const result = msg as any;
-            yield { type: 'done', usage: { input_tokens: result.usage?.input_tokens ?? 0, output_tokens: result.usage?.output_tokens ?? 0, total_cost_usd: result.total_cost_usd } };
+            resultReceived = true;
+            const resultText = typeof result.result === 'string' ? result.result : '';
+            if (resultText && resultText !== streamedText) {
+              // Some SDK versions expose the final assistant text only on the
+              // result message. Emit only the missing suffix when possible.
+              const missing = resultText.startsWith(streamedText)
+                ? resultText.slice(streamedText.length)
+                : resultText;
+              if (missing) yield { type: 'text', content: missing };
+            }
+            yield {
+              type: 'done',
+              resultStatus: result.subtype,
+              resultErrors: Array.isArray(result.errors) ? result.errors : undefined,
+              usage: { input_tokens: result.usage?.input_tokens ?? 0, output_tokens: result.usage?.output_tokens ?? 0, total_cost_usd: result.total_cost_usd },
+            };
             continue;
           }
 
@@ -616,6 +659,12 @@ export class AgentSdkService {
       }
       if (this.stopped) {
         yield { type: 'stopped' };
+      } else if (!resultReceived) {
+        yield {
+          type: 'done',
+          resultStatus: 'stream_closed_without_result',
+          resultErrors: ['SDK stream closed without a terminal result message'],
+        };
       }
     } catch (error: any) {
       if (this.stopped) {

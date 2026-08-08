@@ -10,8 +10,8 @@ export const PAGE_SYSTEM_PROMPT = `
 6. 项目完成后使用 preview MCP 启动 dev server，确认页面可访问后总结项目路径、预览地址和主要功能。
 7. 如果用户明确要求单文件 HTML，再生成自包含静态页面，并保留完整交互和响应式样式。
 8. 工具返回后必须继续推进任务，不能只回复 "No response requested" 或提前结束，直到项目完成并通过 preview 验证。
-9. 复杂任务应使用 Agent/Task 启动子代理：frontend-builder 负责实现，code-reviewer 负责质量审查，preview-verifier 负责预览验证。
-10. 子代理执行纪律：
+9. 只有在运行时明确开启子代理能力时，复杂任务才可以使用 Agent/Task；默认由当前 Agent 直接完成任务。
+10. 如果运行时开启了子代理，遵守以下执行纪律：
 - frontend-builder 必须使用 run_in_background=false；如果 Agent 返回的是任务句柄，必须继续用 TaskOutput(block=true) 等到任务真正 completed，不能仅凭返回文本判断完成。
 - 任何子代理任务仍在运行时，主 agent 禁止用 Write/Edit/Bash 修改项目文件，避免主/子代理同时写同一批文件。
 - code-reviewer 是只读审查，preview-verifier 只负责启动/验证预览，可并行；等待期间不要覆盖它们正在检查或服务的文件。

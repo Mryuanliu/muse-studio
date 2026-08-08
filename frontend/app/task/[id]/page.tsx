@@ -15,7 +15,7 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import { Bubble } from '@ant-design/x';
-import { useChatSSE, ChatAttachment, ChatMessage } from '../../hooks/useChatSSE';
+import { useChatSSE, ChatAttachment, ChatMessage, eventsFromMuseEvents } from '../../hooks/useChatSSE';
 import ChatMessageComponent from '../../components/ChatMessage';
 import PreviewPanel from '../../components/PreviewPanel';
 import WorkspaceEditor from '../../components/WorkspaceEditor';
@@ -74,41 +74,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
         setPreviewStatus('loading');
       }
     };
-    const onAskUser = (data: any) => {
-      if (!data?.requestId) return;
-      setMessages((prev) => {
-        const existingIndex = prev.findIndex((item) =>
-          item.role === 'assistant' && item.events?.some(
-            (event) => event.type === 'ask_user' && event.requestId === data.requestId,
-          ),
-        );
-        const index = existingIndex >= 0
-          ? existingIndex
-          : [...prev].map((item, i) => ({ item, i }))
-            .reverse()
-            .find(({ item }) => item.role === 'assistant')?.i;
-        if (index === undefined) return prev;
-        const message = prev[index];
-        const events = [...(message.events || [])];
-        const event = {
-          type: 'ask_user' as const,
-          requestId: data.requestId,
-          conversationId: data.conversationId,
-          toolUseID: data.toolUseID,
-          questions: data.questions,
-          answers: data.answers,
-          status: data.status || 'pending',
-        };
-        const existing = events.findIndex((item) => item.type === 'ask_user' && item.requestId === data.requestId);
-        if (existing >= 0) events[existing] = { ...events[existing], ...event };
-        else events.push(event);
-        const next = [...prev];
-        next[index] = { ...message, events };
-        return next;
-      });
-    };
     socket.on('preview', onPreview);
-    socket.on('ask_user', onAskUser);
 
     const joinRoom = () => {
       if (!activeConvId) return;
@@ -127,7 +93,6 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
 
     return () => {
       socket.off('preview', onPreview);
-      socket.off('ask_user', onAskUser);
       socket.off('connect', joinRoom);
     };
   }, [conversationId, convId]);
@@ -191,10 +156,9 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
     }
     // 2. Check all assistant messages' events for Write tool file paths
     for (const m of [...messages].reverse()) {
-      if (m.role !== 'assistant' || !m.events) continue;
-      for (const ev of [...m.events].reverse()) {
-        // Check both tool_start (streaming) and tool_update (persisted) for file_path
-        const input = ev.type === 'tool_update' ? ev.toolInput : ev.toolInput;
+      if (m.role !== 'assistant' || !m.museEvents) continue;
+      for (const ev of [...m.museEvents].reverse()) {
+        const input = ev.payload?.toolInput || ev.payload?.input;
         const fp = input?.file_path || input?.path;
         if (fp && typeof fp === 'string' && /\.html?$/i.test(fp)) {
           setPreviewHtml(`http://localhost:3001/preview/${conversationId || convId}`);
@@ -218,10 +182,10 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   useEffect(() => {
     if (!messages.length) return;
     const latestMessage = messages[messages.length - 1];
-    const events = latestMessage?.events || [];
+    const events = latestMessage?.museEvents || [];
     const event = events[events.length - 1];
-    if (!event || !['tool_end', 'tool_update', 'mcp_call'].includes(event.type)) return;
-    const signature = `${messages.length}:${events.length}:${event.type}:${event.toolId || ''}`;
+    if (!event || !['tool.completed', 'tool.updated', 'mcp.completed'].includes(event.type)) return;
+    const signature = `${messages.length}:${events.length}:${event.type}:${event.eventId}`;
     if (lastWorkspaceEventRef.current === signature) return;
     lastWorkspaceEventRef.current = signature;
     setWorkspaceRefreshKey((value) => value + 1);
@@ -314,13 +278,6 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
       const error = await res.json().catch(() => ({}));
       throw new Error(error?.error || '回答提交失败');
     }
-    setMessages((prev) => prev.map((item) => {
-      if (item.role !== 'assistant') return item;
-      const events = (item.events || []).map((event) => event.type === 'ask_user' && event.requestId === payload.requestId
-        ? { ...event, status: 'submitted', answers: payload.answers }
-        : event);
-      return { ...item, events };
-    }));
   };
 
   const bubbleItems = [
@@ -500,8 +457,10 @@ export default function TaskPage() {
           id: m.id,
           role: m.role,
           content: m.content,
-          thinkingChain: m.thinkingChain || undefined,
-          events: m.events ? (typeof m.events === 'string' ? JSON.parse(m.events) : m.events) : undefined,
+          events: m.museEvents
+            ? eventsFromMuseEvents(typeof m.museEvents === 'string' ? JSON.parse(m.museEvents) : m.museEvents)
+            : undefined,
+          museEvents: m.museEvents ? (typeof m.museEvents === 'string' ? JSON.parse(m.museEvents) : m.museEvents) : undefined,
           attachments: m.attachments ? (typeof m.attachments === 'string' ? JSON.parse(m.attachments) : m.attachments) : undefined,
         }));
         // Parse output files from conversation

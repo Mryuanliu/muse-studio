@@ -1,5 +1,4 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { RealtimeService } from '../realtime/realtime.service';
 import { ConversationService } from '../conversation/conversation.service';
 
 export interface AskUserQuestion {
@@ -51,10 +50,7 @@ export class AskUserService {
   private readonly listeners = new Set<(event: AskUserEvent) => void>();
   private readonly waitTimeoutMs = Number(process.env.ASK_USER_TIMEOUT_MS || 10 * 60 * 1000);
 
-  constructor(
-    private readonly realtime: RealtimeService,
-    private readonly conversation: ConversationService,
-  ) {}
+  constructor(private readonly conversation: ConversationService) {}
 
   async getPendingForConversation(conversationId: string): Promise<AskUserPayload[]> {
     const inMemory = [...this.pending.values()]
@@ -68,8 +64,12 @@ export class AskUserService {
     const known = new Set(inMemory.map((item) => item.requestId));
     const persisted = await this.conversation.findOne(conversationId)
       .then((conv) => (conv.messages || []).flatMap((message) => {
-        if (message.role !== 'assistant' || !message.events) return [];
-        try { return JSON.parse(message.events); } catch { return []; }
+        if (message.role !== 'assistant' || !message.museEvents) return [];
+        try {
+          return JSON.parse(message.museEvents)
+            .filter((item: any) => item.type === 'ask_user.requested')
+            .map((item: any) => ({ ...item.payload, status: item.payload?.status || 'pending' }));
+        } catch { return []; }
       }))
       .catch(() => [] as any[]);
     for (const event of persisted) {
@@ -105,20 +105,10 @@ export class AskUserService {
     const earlyAnswer = this.earlyAnswers.get(payload.requestId);
     if (earlyAnswer) {
       this.earlyAnswers.delete(payload.requestId);
-      await this.persistEvent(payload, {
-        type: 'ask_user',
-        requestId: payload.requestId,
-        conversationId: payload.conversationId,
-        toolUseID: payload.toolUseID,
-        answers: earlyAnswer.answers,
-        status: 'submitted',
-      });
       return earlyAnswer;
     }
 
     const event: AskUserEvent = { ...payload, type: 'ask_user', status: 'pending' };
-    await this.persistEvent(payload, event);
-
     let resolvePromise!: (value: AskUserAnswer) => void;
     let rejectPromise!: (error: Error) => void;
     const promise = new Promise<AskUserAnswer>((resolve, reject) => {
@@ -127,7 +117,7 @@ export class AskUserService {
     });
     const timeout = setTimeout(() => {
       this.pending.delete(payload.requestId);
-      void this.persistEvent(payload, {
+      this.publish({
         type: 'ask_user',
         requestId: payload.requestId,
         conversationId: payload.conversationId,
@@ -164,20 +154,6 @@ export class AskUserService {
       }
       const answer = this.buildAnswer(payload);
       this.earlyAnswers.set(payload.requestId, answer);
-      await this.persistEvent({
-        requestId: payload.requestId,
-        conversationId: known.conversationId,
-        toolUseID: known.event.toolUseID,
-        questions: known.event.questions || [],
-      }, {
-        type: 'ask_user',
-        requestId: payload.requestId,
-        conversationId: known.conversationId,
-        toolUseID: known.event.toolUseID,
-        questions: known.event.questions || [],
-        answers: answer.answers,
-        status: 'submitted',
-      });
       this.publish({
         type: 'ask_user',
         requestId: payload.requestId,
@@ -195,14 +171,6 @@ export class AskUserService {
 
     const answer = this.buildAnswer(payload);
 
-    await this.persistEvent(pending, {
-      type: 'ask_user',
-      requestId: pending.requestId,
-      conversationId: pending.conversationId,
-      toolUseID: pending.toolUseID,
-      answers: answer.answers,
-      status: 'submitted',
-    });
     this.publish({
       type: 'ask_user',
       requestId: pending.requestId,
@@ -223,13 +191,8 @@ export class AskUserService {
     return answer;
   }
 
-  private async persistEvent(payload: AskUserPayload, event: AskUserEvent): Promise<void> {
-    await this.conversation.upsertAssistantEvent(payload.conversationId, event);
-  }
-
   private publish(event: AskUserEvent): void {
     for (const listener of this.listeners) listener(event);
-    this.realtime.emitToConversation(event.conversationId, 'ask_user', event);
   }
 
   cancelForConversation(conversationId: string): void {
@@ -237,14 +200,6 @@ export class AskUserService {
       if (pending.conversationId !== conversationId) continue;
       clearTimeout(pending.timeout);
       this.pending.delete(requestId);
-      void this.persistEvent(pending, {
-        type: 'ask_user',
-        requestId: pending.requestId,
-        conversationId: pending.conversationId,
-        toolUseID: pending.toolUseID,
-        questions: pending.questions,
-        status: 'cancelled',
-      });
       this.publish({
         type: 'ask_user',
         requestId: pending.requestId,

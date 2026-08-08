@@ -24,7 +24,7 @@ interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  thinkingChain: string | null;
+  museEvents: string | null;
   conversationId: string;
   createdAt: string;
   conversation?: { id: string; title: string };
@@ -130,11 +130,11 @@ function MarkdownModal({ message, onClose }: { message: Message | null; onClose:
             </div>
           </div>
 
-          {message.thinkingChain && (
+          {message.museEvents && (
             <div>
               <h4 className="text-xs font-medium text-purple-400 mb-2 uppercase tracking-wide">Thinking Chain</h4>
               <div className="bg-purple-900/10 border border-purple-500/20 rounded-lg p-4 text-sm text-purple-200/80 leading-relaxed whitespace-pre-wrap">
-                {message.thinkingChain}
+                {message.museEvents}
               </div>
             </div>
           )}
@@ -234,7 +234,7 @@ function MessagesTable({ onSelectMessage }: { onSelectMessage: (m: Message) => v
             <tr className="border-b border-white/10 text-gray-500 text-xs uppercase tracking-wide">
               <th className="text-left py-2 px-2 font-medium w-12">角色</th>
               <th className="text-left py-2 px-2 font-medium">内容预览</th>
-              <th className="text-left py-2 px-2 font-medium w-20">思考链</th>
+              <th className="text-left py-2 px-2 font-medium w-20">事件流</th>
               <th className="text-right py-2 px-2 font-medium w-32">时间</th>
               <th className="text-right py-2 px-2 font-medium w-16">详情</th>
             </tr>
@@ -251,8 +251,8 @@ function MessagesTable({ onSelectMessage }: { onSelectMessage: (m: Message) => v
                   {msg.content?.slice(0, 80) || '(empty)'}
                 </td>
                 <td className="py-2 px-2 text-center">
-                  {msg.thinkingChain ? (
-                    <span className="text-purple-400 text-xs">{(msg.thinkingChain.length / 100).toFixed(1)}k chars</span>
+                  {msg.museEvents ? (
+                    <span className="text-purple-400 text-xs">{(msg.museEvents.length / 100).toFixed(1)}k chars</span>
                   ) : (
                     <span className="text-gray-600">—</span>
                   )}

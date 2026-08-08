@@ -72,15 +72,11 @@ export class ConversationService {
     conversationId: string,
     role: 'user' | 'assistant',
     content: string,
-    thinkingChain?: string,
-    events?: any[],
     attachments?: any[],
   ): Promise<Message> {
     const msg = this.msgRepo.create({
       role,
       content,
-      thinkingChain,
-      events: events ? JSON.stringify(events) : undefined,
       attachments: attachments?.length ? JSON.stringify(attachments) : undefined,
       conversationId,
     });
@@ -93,68 +89,13 @@ export class ConversationService {
   async updateMessage(
     messageId: string,
     content: string,
-    thinkingChain?: string,
-    events?: any[],
+    museEvents?: any[],
     attachments?: any[],
   ): Promise<void> {
-    const update: any = { content, thinkingChain };
-    if (events) update.events = JSON.stringify(events);
+    const update: any = { content };
+    if (museEvents) update.museEvents = JSON.stringify(museEvents);
     if (attachments) update.attachments = JSON.stringify(attachments);
     await this.msgRepo.update(messageId, update);
-  }
-
-  /** Append events to an existing message (streaming). */
-  async appendEvents(messageId: string, events: any[]): Promise<void> {
-    const msg = await this.msgRepo.findOne({ where: { id: messageId } });
-    if (!msg) return;
-    const existing = msg.events ? JSON.parse(msg.events) : [];
-    existing.push(...events);
-    await this.msgRepo.update(messageId, { events: JSON.stringify(existing) });
-  }
-
-  /** Upsert an interactive question event without disturbing event order. */
-  async upsertAssistantEvent(conversationId: string, event: any): Promise<void> {
-    const messages = await this.msgRepo.find({
-      where: { conversationId, role: 'assistant' },
-      order: { createdAt: 'DESC' },
-    });
-    let message = messages[0];
-    if (!message) return;
-
-    let events: any[] = [];
-    for (const candidate of messages) {
-      if (!candidate.events) continue;
-      try {
-        const candidateEvents = JSON.parse(candidate.events);
-        if (event.requestId && candidateEvents.some(
-          (item: any) => item.type === 'ask_user' && item.requestId === event.requestId,
-        )) {
-          message = candidate;
-          events = candidateEvents;
-          break;
-        }
-      } catch {
-        // Ignore malformed legacy event data.
-      }
-    }
-    if (!events.length && message.events) {
-      try { events = JSON.parse(message.events); } catch { events = []; }
-    }
-    const index = event.requestId
-      ? events.findIndex((item) => item.type === 'ask_user' && item.requestId === event.requestId)
-      : -1;
-    if (index >= 0) {
-      events[index] = {
-        ...events[index],
-        ...event,
-        type: 'ask_user',
-        questions: event.questions || events[index].questions,
-      };
-    } else {
-      events.push(event);
-    }
-    await this.msgRepo.update(message.id, { events: JSON.stringify(events) });
-    await this.convRepo.update(conversationId, { updatedAt: new Date() });
   }
 
   async findAssistantAskUser(requestId: string): Promise<{ conversationId: string; event: any } | undefined> {
@@ -162,14 +103,15 @@ export class ConversationService {
       where: { role: 'assistant' },
     });
     for (const message of messages) {
-      if (!message.events) continue;
+      if (!message.museEvents) continue;
       try {
-        const event = JSON.parse(message.events).find(
-          (item: any) => item.type === 'ask_user' && item.requestId === requestId,
+        const event = [...JSON.parse(message.museEvents)].reverse().find(
+          (item: any) => ['ask_user.requested', 'ask_user.resolved'].includes(item.type)
+            && item.payload?.requestId === requestId,
         );
-        if (event) return { conversationId: message.conversationId, event };
+        if (event) return { conversationId: message.conversationId, event: { ...event.payload, status: event.type === 'ask_user.resolved' ? 'submitted' : event.payload?.status } };
       } catch {
-        // Ignore malformed legacy event data.
+        // Ignore malformed event data.
       }
     }
     return undefined;

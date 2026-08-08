@@ -11,6 +11,7 @@ export interface AgentRuntimeConfig {
   enabledSkills: string[];
   enabledMcps: string[];
   mcpServers?: Record<string, McpRuntimeServer>;
+  enableSubagents?: boolean;
 }
 
 @Injectable()
@@ -24,10 +25,6 @@ export class SandboxServiceClient {
 
   getOutputDir(conversationId?: string): string {
     return path.resolve(this.sandboxRoot, 'workspaces', conversationId || 'default');
-  }
-
-  getLegacyOutputDir(): string {
-    return path.resolve(this.sandboxRoot, 'workspaces');
   }
 
   async *run(
@@ -52,6 +49,7 @@ export class SandboxServiceClient {
       agentId: runtime?.agentId,
       agentType: runtime?.agentType,
       mcpServers: runtime?.mcpServers,
+      enableSubagents: runtime?.enableSubagents ?? process.env.ENABLE_SUBAGENTS === 'true',
     };
 
     const createRes = await fetch(`${this.baseUrl}/tasks`, {

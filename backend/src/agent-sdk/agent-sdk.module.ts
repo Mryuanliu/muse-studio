@@ -9,11 +9,12 @@ import { PreviewModule } from '../preview/preview.module';
 import { AskUserController } from './ask-user.controller';
 import { AskUserService } from './ask-user.service';
 import { AgentModule } from '../agent/agent.module';
+import { MuseEventNormalizer } from '../events/muse-event.normalizer';
 
 @Module({
   imports: [ConversationModule, PlatformModule, AgentModule, RealtimeModule, PreviewModule],
   controllers: [AgentSdkController, AskUserController],
-  providers: [SandboxServiceClient, AgentRunService, AskUserService],
+  providers: [SandboxServiceClient, AgentRunService, AskUserService, MuseEventNormalizer],
   exports: [AskUserService],
 })
 export class AgentSdkModule {}

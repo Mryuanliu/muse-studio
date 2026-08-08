@@ -50,23 +50,47 @@ export interface EventLog {
   taskUsage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
 }
 
+export type MuseEventType =
+  | 'run.started' | 'reasoning.started' | 'reasoning.delta' | 'reasoning.completed'
+  | 'message.delta' | 'message.completed'
+  | 'tool.started' | 'tool.updated' | 'tool.completed' | 'tool.failed'
+  | 'subagent.started' | 'subagent.progress' | 'subagent.completed' | 'subagent.failed'
+  | 'mcp.started' | 'mcp.completed' | 'mcp.failed'
+  | 'skill.loaded' | 'skill.invoked'
+  | 'command.output'
+  | 'ask_user.requested' | 'ask_user.resolved' | 'status'
+  | 'run.completed' | 'run.failed' | 'run.stopped';
+
+export interface MuseEvent {
+  eventId: string;
+  runId: string;
+  conversationId: string;
+  sequence: number;
+  timestamp: string;
+  type: MuseEventType;
+  source: 'model' | 'agent' | 'tool' | 'mcp' | 'skill' | 'system';
+  parentId?: string;
+  payload?: Record<string, any>;
+}
+
 export interface ChatMessage {
   id?: string;
   role: 'user' | 'assistant';
   /** Final assembled text content */
   content: string;
-  /** Full thinking chain (for collapsible display) */
-  thinkingChain?: string;
   /** Chronological event log */
   events?: EventLog[];
+  /** Versioned, runtime-independent event log */
+  museEvents?: MuseEvent[];
   attachments?: ChatAttachment[];
 }
 
-function parseEvents(value: any): EventLog[] | undefined {
+function parseMuseEvents(value: any): MuseEvent[] | undefined {
   if (!value) return undefined;
-  if (Array.isArray(value)) return value as EventLog[];
+  if (Array.isArray(value)) return value as MuseEvent[];
   try {
-    return JSON.parse(value) as EventLog[];
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed as MuseEvent[] : undefined;
   } catch {
     return undefined;
   }
@@ -88,10 +112,75 @@ function normalizeMessages(messages: any[]): ChatMessage[] {
     id: m.id,
     role: m.role,
     content: m.content || '',
-    thinkingChain: m.thinkingChain || undefined,
-    events: parseEvents(m.events),
+    events: eventsFromMuseEvents(parseMuseEvents(m.museEvents)),
+    museEvents: parseMuseEvents(m.museEvents),
     attachments: parseAttachments(m.attachments),
   }));
+}
+
+function payloadOf(event: MuseEvent): Record<string, any> {
+  return event.payload || {};
+}
+
+/** Convert the canonical Muse event into the compact view model used by ChatMessage. */
+function toViewEvent(event: MuseEvent): EventLog | undefined {
+  const payload = payloadOf(event);
+  switch (event.type) {
+    case 'reasoning.delta':
+      return { type: 'thinking', content: payload.content || payload.text || '' };
+    case 'message.delta':
+      return { type: 'text_chunk', content: payload.content || payload.text || '' };
+    case 'tool.started':
+      return { type: 'tool_start', toolName: payload.toolName, toolId: payload.toolId, toolInput: payload.toolInput };
+    case 'tool.updated':
+      return { type: 'tool_update', toolName: payload.toolName, toolId: payload.toolId, toolInput: payload.toolInput, status: payload.status };
+    case 'tool.completed':
+      return { type: 'tool_end', toolName: payload.toolName, toolId: payload.toolId, toolInput: payload.toolInput, toolResult: payload.toolResult, status: payload.status || 'completed' };
+    case 'tool.failed':
+      return { type: 'tool_end', toolName: payload.toolName, toolId: payload.toolId, toolInput: payload.toolInput, toolResult: payload.toolResult, status: 'failed' };
+    case 'subagent.started':
+      return { type: 'subagent_start', ...payload };
+    case 'subagent.progress':
+      return { type: 'subagent_progress', ...payload };
+    case 'subagent.completed':
+      return { type: 'subagent_end', ...payload, status: payload.status || 'completed' };
+    case 'subagent.failed':
+      return { type: 'subagent_end', ...payload, status: payload.status || 'failed' };
+    case 'mcp.started':
+      return { type: 'mcp_call', ...payload };
+    case 'mcp.completed':
+      return { type: 'mcp_call', ...payload, status: payload.status || 'result' };
+    case 'mcp.failed':
+      return { type: 'mcp_call', ...payload, status: payload.status || 'error' };
+    case 'skill.loaded':
+      return { type: 'skill_load', ...payload };
+    case 'skill.invoked':
+      return { type: 'skill_invoke', ...payload };
+    case 'command.output':
+      return { type: 'command_output', content: payload.content };
+    case 'ask_user.requested':
+      return { type: 'ask_user', ...payload, status: payload.status || 'pending' };
+    case 'ask_user.resolved':
+      return { type: 'ask_user', ...payload, status: payload.status || 'submitted' };
+    case 'status':
+      return { type: 'status', content: payload.content, subtype: payload.subtype || payload.status };
+    case 'run.completed':
+      return { type: 'status', content: payload.summary || '任务已完成', subtype: 'completed' };
+    case 'run.failed':
+      return { type: 'status', content: payload.message || '任务未正常完成', subtype: 'error' };
+    case 'run.stopped':
+      return { type: 'status', content: payload.message || '已停止本轮生成', subtype: 'stopped' };
+    default:
+      return undefined;
+  }
+}
+
+export function eventsFromMuseEvents(events?: MuseEvent[]): EventLog[] | undefined {
+  if (!events?.length) return undefined;
+  return [...events]
+    .sort((a, b) => a.sequence - b.sequence)
+    .map(toViewEvent)
+    .filter((event): event is EventLog => Boolean(event));
 }
 
 /**
@@ -117,20 +206,6 @@ export function useChatSSE(opts?: {
     if (opts?.initialConversationId) setConversationId(opts.initialConversationId);
     if (opts?.initialSdkSessionId) setSdkSessionId(opts.initialSdkSessionId);
   }, [opts?.initialMessages, opts?.initialConversationId, opts?.initialSdkSessionId]);
-
-  const pushEvent = (ev: EventLog) => {
-    setMessages((prev) => {
-      const arr = [...prev];
-      const last = arr[arr.length - 1];
-      if (last?.role === 'assistant') {
-        arr[arr.length - 1] = {
-          ...last,
-          events: [...(last.events || []), ev],
-        };
-      }
-      return arr;
-    });
-  };
 
   const updateLastAssistant = (updater: (msg: ChatMessage) => ChatMessage) => {
     setMessages((prev) => {
@@ -168,7 +243,33 @@ export function useChatSSE(opts?: {
     abortRef.current = abortCtrl;
 
     let fullContent = '';
-    let fullThinking = '';
+    const applyMuseEvent = (event: MuseEvent) => {
+      const viewEvent = toViewEvent(event);
+      const payload = payloadOf(event);
+      if (event.type === 'message.delta') fullContent += payload.content || payload.text || '';
+      if (event.type === 'run.completed' && !fullContent.trim() && payload.summary) {
+        fullContent = payload.summary;
+      }
+      setMessages((prev) => {
+        const arr = [...prev];
+        const last = arr[arr.length - 1];
+        if (last?.role === 'assistant') {
+          const museEvents = [...(last.museEvents || [])];
+          if (!museEvents.some((item) => item.eventId === event.eventId)) {
+            museEvents.push(event);
+          }
+          arr[arr.length - 1] = {
+            ...last,
+            museEvents,
+            events: viewEvent ? [...(last.events || []), viewEvent] : last.events,
+          };
+        }
+        return arr;
+      });
+      if (event.type === 'message.delta' || event.type === 'run.completed') {
+        updateLastAssistant((msg) => ({ ...msg, content: fullContent }));
+      }
+    };
 
     try {
       const res = await fetch('http://localhost:3001/agent/run', {
@@ -211,17 +312,20 @@ export function useChatSSE(opts?: {
           switch (lastEvent) {
             case 'snapshot': {
               const snapshotMessages = normalizeMessages(data.messages || []);
+              const currentSnapshotAssistant = [...snapshotMessages].reverse().find((m) => m.role === 'assistant');
               setMessages(snapshotMessages);
               if (data.conversationId) setConversationId(data.conversationId);
               if (data.sdkSessionId) setSdkSessionId(data.sdkSessionId);
               if (data.messageId) {
                 updateLastAssistant((msg) => ({ ...msg, id: data.messageId }));
               }
-              const currentAssistant = [...snapshotMessages].reverse().find((m) => m.role === 'assistant');
-              fullContent = currentAssistant?.content || '';
-              fullThinking = currentAssistant?.thinkingChain || '';
+              fullContent = currentSnapshotAssistant?.content || '';
               break;
             }
+
+            case 'muse_event':
+              applyMuseEvent(data as MuseEvent);
+              break;
 
             case 'meta':
               if (data.conversationId) setConversationId(data.conversationId);
@@ -229,109 +333,13 @@ export function useChatSSE(opts?: {
               if (data.messageId) updateLastAssistant((msg) => ({ ...msg, id: data.messageId }));
               break;
 
-            case 'thinking':
-              fullThinking += data.content || '';
-              pushEvent({ type: 'thinking', content: data.content });
-              updateLastAssistant((msg) => ({ ...msg, thinkingChain: fullThinking }));
-              break;
-
-            case 'text':
-              fullContent += data.content || '';
-              pushEvent({ type: 'text_chunk', content: data.content });
-              updateLastAssistant((msg) => ({ ...msg, content: fullContent, thinkingChain: fullThinking }));
-              break;
-
-            case 'tool_start':
-              pushEvent({ type: 'tool_start', toolName: data.toolName, toolId: data.toolId, toolInput: data.toolInput });
-              break;
-
-            case 'tool_update':
-              // Replace last tool_start's toolInput with final parsed input
-              setMessages((prev) => {
-                const arr = [...prev];
-                const last = arr[arr.length - 1];
-                if (last?.role === 'assistant' && last.events) {
-                  const evts = [...last.events];
-                  for (let i = evts.length - 1; i >= 0; i--) {
-                    if (evts[i].type === 'tool_start' && evts[i].toolId === data.toolId) {
-                      evts[i] = { ...evts[i], toolInput: data.toolInput };
-                      break;
-                    }
-                  }
-                  arr[arr.length - 1] = { ...last, events: evts };
-                }
-                return arr;
-              });
-              break;
-
-            case 'tool_progress':
-              pushEvent({
-                type: 'tool_progress',
-                toolName: data.toolName,
-                toolId: data.toolId,
-                subtype: data.status,
-                taskId: data.taskId,
-                parentToolUseId: data.parentToolUseId,
-              });
-              break;
-
-            case 'tool_end':
-              pushEvent({ type: 'tool_end', toolName: data.toolName, toolId: data.toolId, toolInput: data.toolInput, toolResult: data.toolResult });
-              break;
-
-            case 'skill_load':
-              pushEvent({ type: 'skill_load', skillName: data.skillName, status: data.status });
-              break;
-
-            case 'skill_invoke':
-              pushEvent({ type: 'skill_invoke', skillName: data.skillName, toolId: data.toolId, status: data.status, input: data.input });
-              break;
-
-            case 'mcp_status':
-              pushEvent({ type: 'mcp_status', serverName: data.serverName, status: data.status });
-              break;
-
-            case 'mcp_call':
-              pushEvent({ type: 'mcp_call', serverName: data.serverName, toolName: data.toolName, toolId: data.toolId, status: data.status, input: data.input, output: data.output });
-              break;
-
-            case 'status':
-              pushEvent({ type: 'status', content: data.content, subtype: data.subtype });
-              break;
-
-            case 'command_output':
-              pushEvent({ type: 'command_output', content: data.content });
-              break;
-
-            case 'subagent_start':
-            case 'subagent_progress':
-            case 'subagent_end':
-              pushEvent({
-                type: lastEvent,
-                taskId: data.taskId,
-                toolId: data.toolId,
-                parentToolUseId: data.parentToolUseId,
-                description: data.description,
-                subagentType: data.subagentType,
-                summary: data.summary,
-                outputFile: data.outputFile,
-                status: data.status,
-                taskUsage: data.taskUsage,
-              });
-              break;
-
             case 'heartbeat':
               break;
 
             case 'done':
-              updateLastAssistant((msg) => ({ ...msg, content: fullContent, thinkingChain: fullThinking }));
               break;
 
             case 'stopped': {
-              const stopText = data.content || '已停止本轮生成';
-              fullContent += `\n\n${stopText}`;
-              pushEvent({ type: 'status', content: stopText, subtype: 'stopped' });
-              updateLastAssistant((msg) => ({ ...msg, content: fullContent, thinkingChain: fullThinking }));
               break;
             }
 
