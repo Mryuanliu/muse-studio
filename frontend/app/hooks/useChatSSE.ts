@@ -283,11 +283,11 @@ export function useChatSSE(opts?: {
     }
   }, [isStreaming]);
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, conversationOverride?: string) => {
     if (!text.trim() || isStreaming) return;
     await connectRun({
       prompt: text,
-      conversationId: conversationId || undefined,
+      conversationId: conversationOverride || conversationId || undefined,
       resumeSessionId: sdkSessionId || undefined,
     }, 'send');
   }, [connectRun, conversationId, sdkSessionId, isStreaming]);
@@ -315,5 +315,5 @@ export function useChatSSE(opts?: {
     }
   }, [conversationId]);
 
-  return { messages, isStreaming, sendMessage, attach, stop, conversationId, setMessages };
+  return { messages, isStreaming, sendMessage, attach, stop, conversationId, setConversationId, setMessages };
 }

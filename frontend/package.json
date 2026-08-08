@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --port 3000",
-    "dev:prod": "npm run build && next start --port 3000",
+    "dev:prod": "next dev --port 3000",
     "build": "next build",
     "start": "next start"
   },
@@ -12,6 +12,7 @@
     "@ant-design/icons": "^5.6.1",
     "@ant-design/pro-components": "^2.8.10",
     "@ant-design/x": "^2.9.0",
+    "@monaco-editor/react": "^4.7.0",
     "antd": "^5.29.3",
     "lucide-react": "^1.28.0",
     "next": "^15.0.0",

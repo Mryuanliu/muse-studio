@@ -64,4 +64,9 @@ export class ChatController {
   async getConversation(@Param('id') id: string) {
     return this.conversationService.findOne(id);
   }
+
+  @Post('conversations/draft')
+  async createDraft() {
+    return this.conversationService.createDraft();
+  }
 }

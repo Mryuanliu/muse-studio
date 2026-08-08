@@ -11,7 +11,7 @@ NC='\033[0m'
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo -e "${BLUE}╔══════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║    H5 页面生成平台 — 启动脚本            ║${NC}"
+echo -e "${BLUE}║    AI 工作区 — 启动脚本                  ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -72,14 +72,12 @@ fi
 mkdir -p "$ROOT_DIR/backend/data"
 echo ""
 
-# ── 4. Build services ──
-echo -e "${YELLOW}[4/5] 构建服务...${NC}"
+# ── 4. Build backend services ──
+echo -e "${YELLOW}[4/5] 构建后端服务...${NC}"
 cd "$ROOT_DIR/sandbox" && npm run build 2>&1 | sed 's/^/  /'
 echo -e "${GREEN}  ✓ 沙箱构建完成${NC}"
 cd "$ROOT_DIR/backend" && npx nest build 2>&1 | sed 's/^/  /'
 echo -e "${GREEN}  ✓ 后端构建完成${NC}"
-cd "$ROOT_DIR/frontend" && npm run build 2>&1 | sed 's/^/  /'
-echo -e "${GREEN}  ✓ 前端构建完成${NC}"
 echo ""
 
 # ── 5. Start services ──
@@ -101,9 +99,9 @@ BACKEND_PID=$!
 # Wait for backend to be ready
 sleep 3
 
-# Start frontend (background)
+# Start frontend in development mode for Fast Refresh
 cd "$ROOT_DIR/frontend"
-npx next start --port 3000 2>&1 &
+npx next dev --port 3000 2>&1 &
 FRONTEND_PID=$!
 
 sleep 2

@@ -33,6 +33,11 @@ export class ConversationService {
     return this.convRepo.findOne({ where: { id: saved.id }, relations: ['messages'] }) as Promise<Conversation>;
   }
 
+  async createDraft(): Promise<Conversation> {
+    const saved = await this.convRepo.save(this.convRepo.create({ title: '新对话' }));
+    return this.convRepo.findOne({ where: { id: saved.id }, relations: ['messages'] }) as Promise<Conversation>;
+  }
+
   /** Find a conversation by ID with its messages. */
   async findOne(id: string): Promise<Conversation> {
     const conv = await this.convRepo.findOne({

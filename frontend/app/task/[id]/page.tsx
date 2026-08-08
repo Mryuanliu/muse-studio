@@ -4,12 +4,22 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { io } from 'socket.io-client';
-import { Button } from 'antd';
-import { Bubble, Sender } from '@ant-design/x';
+import { Avatar, Button, Segmented, Tabs, Tooltip, Upload, message } from 'antd';
+import type { UploadProps } from 'antd';
+import {
+  CodeOutlined,
+  DesktopOutlined,
+  MobileOutlined,
+  PaperClipOutlined,
+  SendOutlined,
+  UserOutlined,
+} from '@ant-design/icons';
+import { Bubble } from '@ant-design/x';
 import { useChatSSE, ChatMessage } from '../../hooks/useChatSSE';
 import ChatMessageComponent from '../../components/ChatMessage';
 import PreviewPanel from '../../components/PreviewPanel';
 import AskUserCard, { AskUserCardData } from '../../components/AskUserCard';
+import WorkspaceEditor from '../../components/WorkspaceEditor';
 
 function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initialRunStatus }: {
   convId?: string;
@@ -18,7 +28,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   initialOutputFiles?: string[];
   initialRunStatus?: string;
 }) {
-  const { messages, isStreaming, sendMessage, attach, stop, conversationId } = useChatSSE({
+  const { messages, isStreaming, sendMessage, attach, stop, conversationId, setConversationId } = useChatSSE({
     initialMessages: initialMsgs,
     initialConversationId: convId,
     initialSdkSessionId: sdkSessionId,
@@ -28,10 +38,15 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   const [previewStatus, setPreviewStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
   const [askCards, setAskCards] = useState<AskUserCardData[]>([]);
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<'preview' | 'code'>('preview');
+  const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
+  const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0);
+  const [uploading, setUploading] = useState(false);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const attachRef = React.useRef<string | null>(null);
   const previewSocketRef = React.useRef<ReturnType<typeof io> | null>(null);
   const joinedRoomRef = React.useRef<string | null>(null);
+  const lastWorkspaceEventRef = React.useRef<string>('');
 
   // Preview-ready notifications are pushed through Socket.IO only.
   useEffect(() => {
@@ -49,6 +64,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
         setPreviewStatus('error');
       } else if (data?.status === 'updated') {
         setPreviewRefreshKey((n) => n + 1);
+        setWorkspaceRefreshKey((n) => n + 1);
       } else {
         setPreviewStatus('loading');
       }
@@ -121,10 +137,8 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   // Extract HTML for preview — use output files / tool update events / regex
   useEffect(() => {
     // 1. Check initialOutputFiles (from persisted conversation)
-    const of = initialOutputFiles;
-    if (of && of.length > 0) {
-      const filename = of[0].split('/').pop() || of[0];
-      setPreviewHtml(`http://localhost:3001/output/${filename}`);
+    if (initialOutputFiles?.length) {
+      setPreviewHtml(`http://localhost:3001/preview/${conversationId || convId}`);
       setPreviewStatus('ready');
       return;
     }
@@ -136,8 +150,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
         const input = ev.type === 'tool_update' ? ev.toolInput : ev.toolInput;
         const fp = input?.file_path || input?.path;
         if (fp && typeof fp === 'string' && /\.html?$/i.test(fp)) {
-          const filename = fp.split('/').pop() || fp;
-          setPreviewHtml(`http://localhost:3001/output/${filename}`);
+          setPreviewHtml(`http://localhost:3001/preview/${conversationId || convId}`);
           setPreviewStatus('ready');
           return;
         }
@@ -152,13 +165,79 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
         setPreviewStatus('ready');
       }
     }
-  }, [messages, initialOutputFiles]);
+  }, [messages, initialOutputFiles, conversationId, convId]);
+
+  // Agent file writes imply that the workspace tree and preview may have changed.
+  useEffect(() => {
+    if (!messages.length) return;
+    const latestMessage = messages[messages.length - 1];
+    const events = latestMessage?.events || [];
+    const event = events[events.length - 1];
+    if (!event || !['tool_end', 'tool_update', 'mcp_call'].includes(event.type)) return;
+    const signature = `${messages.length}:${events.length}:${event.type}:${event.toolId || ''}`;
+    if (lastWorkspaceEventRef.current === signature) return;
+    lastWorkspaceEventRef.current = signature;
+    setWorkspaceRefreshKey((value) => value + 1);
+    setPreviewRefreshKey((value) => value + 1);
+  }, [messages]);
 
   const handleSubmit = () => {
     const text = input.trim();
     if (!text || isStreaming) return;
     setInput('');
     sendMessage(text);
+  };
+
+  const ensureConversation = async () => {
+    const active = conversationId || convId;
+    if (active && active !== 'new') return active;
+    const response = await fetch('http://localhost:3001/chat/conversations/draft', { method: 'POST' });
+    if (!response.ok) throw new Error('无法创建会话');
+    const draft = await response.json();
+    setConversationId(draft.id);
+    window.history.replaceState(null, '', `/task/${draft.id}`);
+    return draft.id as string;
+  };
+
+  const uploadImage = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      message.error('目前只支持图片文件');
+      return false;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      message.error('图片不能超过 10 MB');
+      return false;
+    }
+    setUploading(true);
+    try {
+      const id = await ensureConversation();
+      const data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error('图片读取失败'));
+        reader.readAsDataURL(file);
+      });
+      const response = await fetch(`http://localhost:3001/workspace/${id}/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: file.name, mimeType: file.type, data }),
+      });
+      if (!response.ok) throw new Error('图片上传失败');
+      const result = await response.json();
+      setInput((value) => `${value}${value ? '\n' : ''}请参考图片 ${result.path} 完成任务`);
+      message.success('图片已添加到当前工作区');
+    } catch (error: any) {
+      message.error(error.message || '图片上传失败');
+    } finally {
+      setUploading(false);
+    }
+    return false;
+  };
+
+  const uploadProps: UploadProps = {
+    accept: 'image/*',
+    showUploadList: false,
+    beforeUpload: uploadImage,
   };
 
   const handleAskUserSubmit = async (payload: {
@@ -193,6 +272,8 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
             isStreaming={isStreaming && i === messages.length - 1}
           />
         ),
+      ...(msg.role === 'user'
+        ? {}
     })),
     ...askCards.map((card) => ({
       key: `ask-${card.requestId}`,
@@ -204,7 +285,7 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Left: Chat (narrower) */}
-      <div className="w-[35%] min-w-[320px] border-r border-gray-200 bg-white flex flex-col">
+      <div className="w-[30%] max-w-[420px] min-w-[300px] border-r border-gray-200 bg-white flex flex-col">
         {/* Header */}
         <div className="flex-shrink-0 px-4 py-3 border-b border-gray-200 flex items-center justify-between">
           <Link href="/tasks" className="text-xs text-gray-500 hover:text-gray-700 transition-colors">
@@ -227,41 +308,81 @@ function TaskChat({ convId, initialMsgs, sdkSessionId, initialOutputFiles, initi
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto px-3 py-5">
           <Bubble.List
+            rootClassName="chat-bubble-list"
             items={bubbleItems}
             autoScroll
             role={{
               ai: {
-                styles: { content: { background: 'transparent', padding: 0 } },
+                placement: 'start',
+                styles: {
+                  body: { width: '100%', maxWidth: 'none', minWidth: 0 },
+                  content: { background: 'transparent', padding: 0 },
+                },
+              },
+              user: {
+                placement: 'end',
+                avatar: <Avatar size={28} icon={<UserOutlined />} className="chat-avatar chat-avatar-user" />,
+                styles: { body: { maxWidth: '88%' } },
               },
             }}
           />
         </div>
 
         {/* Input */}
-        <div className="flex-shrink-0 border-t border-gray-200 p-4">
-          <Sender
-            value={input}
-            onChange={setInput}
-            onSubmit={(message) => {
-              setInput('');
-              sendMessage(message);
-            }}
-            loading={isStreaming}
-            placeholder="输入 H5 页面描述..."
-          />
+        <div className="flex-shrink-0 border-t border-gray-200 bg-white p-3">
+          <div className="workspace-composer">
+            <textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  handleSubmit();
+                }
+              }}
+              disabled={isStreaming}
+              placeholder="描述你想创建或修改的内容..."
+              rows={4}
+            />
+            <div className="workspace-composer-footer">
+              <Upload {...uploadProps} disabled={isStreaming || uploading}>
+                <Tooltip title="添加图片"><Button type="text" icon={<PaperClipOutlined />} loading={uploading} /></Tooltip>
+              </Upload>
+              <span className="workspace-composer-hint">Enter 发送 · Shift + Enter 换行</span>
+              <Button type="primary" shape="circle" icon={<SendOutlined />} disabled={!input.trim() || isStreaming} onClick={handleSubmit} />
+            </div>
+          </div>
         </div>
       </div>
 
       {/* Right: Preview (wider) */}
-      <div className="flex-1 min-w-0">
-        <PreviewPanel
-          html={previewHtml}
-          loading={previewStatus === 'loading'}
-          error={previewStatus === 'error'}
-          refreshKey={previewRefreshKey}
-        />
+      <div className="workspace-main flex-1 min-w-0">
+        <div className="workspace-main-header">
+          <Tabs
+            activeKey={activeWorkspaceTab}
+            onChange={(key) => {
+              setActiveWorkspaceTab(key as 'preview' | 'code');
+              if (key === 'preview') setPreviewRefreshKey((value) => value + 1);
+            }}
+            items={[{ key: 'preview', label: '页面预览' }, { key: 'code', label: <span><CodeOutlined /> 代码</span> }]}
+          />
+          {activeWorkspaceTab === 'preview' && (
+            <Segmented
+              value={device}
+              onChange={(value) => setDevice(value as 'desktop' | 'mobile')}
+              options={[{ value: 'desktop', label: '桌面端', icon: <DesktopOutlined /> }, { value: 'mobile', label: '移动端', icon: <MobileOutlined /> }]}
+            />
+          )}
+        </div>
+        <div className="workspace-main-content">
+          {activeWorkspaceTab === 'preview' ? (
+            <PreviewPanel html={previewHtml} loading={previewStatus === 'loading'} error={previewStatus === 'error'} refreshKey={previewRefreshKey} device={device} />
+          ) : (
+            <WorkspaceEditor conversationId={(conversationId || convId) !== 'new' ? (conversationId || convId) : undefined} refreshKey={workspaceRefreshKey} onSaved={() => setPreviewRefreshKey((value) => value + 1)} />
+          )}
+        </div>
       </div>
     </div>
   );

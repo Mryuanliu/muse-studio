@@ -1,7 +1,7 @@
 {
   "name": "h5-platform-backend",
   "version": "0.0.1",
-  "description": "H5 Page Generation Platform - Backend",
+  "description": "AI Workspace Platform - Backend",
   "private": true,
   "scripts": {
     "build": "nest build",

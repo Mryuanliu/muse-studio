@@ -1,6 +1,6 @@
-# H5 页面生成平台
+# AI 工作区平台
 
-使用 `@anthropic-ai/claude-agent-sdk` + DeepSeek 模型实现的 H5 页面生成平台。核心创新是通过一个 **OpenAI 兼容代理层**，让 Anthropic SDK 透明地使用 DeepSeek 模型。
+使用 `@anthropic-ai/claude-agent-sdk` + DeepSeek 模型实现的 AI 项目工作区。核心创新是通过一个 **OpenAI 兼容代理层**，让 Anthropic SDK 透明地使用 DeepSeek 模型。
 
 ## 项目展示
 

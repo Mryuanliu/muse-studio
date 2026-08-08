@@ -9,6 +9,7 @@ import { OutputController } from './output/output.controller';
 import { PlatformModule } from './platform/platform.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { PreviewModule } from './preview/preview.module';
+import { WorkspaceModule } from './workspace/workspace.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { PreviewModule } from './preview/preview.module';
     PlatformModule,
     RealtimeModule,
     PreviewModule,
+    WorkspaceModule,
   ],
   controllers: [OutputController],
 })
