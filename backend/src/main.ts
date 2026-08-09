@@ -6,6 +6,7 @@ import { RealtimeService } from './realtime/realtime.service';
 import { PreviewService } from './preview/preview.service';
 import { ConversationService } from './conversation/conversation.service';
 import { AskUserService } from './agent-sdk/ask-user.service';
+import { FeishuService } from './feishu/feishu.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -32,6 +33,7 @@ async function bootstrap() {
   const previewService = app.get(PreviewService);
   const conversationService = app.get(ConversationService);
   const askUserService = app.get(AskUserService);
+  app.get(FeishuService).start();
   const publicBase = process.env.PUBLIC_BASE_URL || 'http://localhost:3001';
   const sandboxUrl = process.env.SANDBOX_SERVICE_URL || 'http://localhost:3002';
 

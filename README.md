@@ -203,6 +203,25 @@ MAX_TURNS=40
 
 `AI_BASE_URL` 应指向 OpenAI-compatible API 的版本根路径，平台会请求其 `/chat/completions` 接口。不要把真实 API Key 提交到 Git 仓库。
 
+### 飞书侧路集成（可选）
+
+飞书机器人作为独立侧路模块运行，不参与主线前端流程。配置后端环境变量即可启用：
+
+```dotenv
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+FEISHU_AGENT_CODE=feishu-agent
+# 可选：仅在飞书事件配置启用加密推送/传统回调时配置
+FEISHU_ENCRYPT_KEY=xxx
+FEISHU_VERIFICATION_TOKEN=xxx
+```
+
+模块使用飞书 NodeJS SDK 长连接接收 `im.message.receive_v1`，按 `message_id` 做幂等，按租户和群聊映射 Muse 会话，并异步调用指定 Agent。未配置 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET` 时模块自动停用，不影响主线服务。
+
+飞书应用需要启用机器人能力，并订阅“接收消息 v2.0”事件；服务进程需要能够访问公网。还需要申请 `im:message`、`im:message:send_as_bot` 或历史版本 `im:message:send` 其中之一，否则收消息成功但回复会返回 400。机器人必须在目标群内且有发言权限；该模块默认只处理文本消息，群聊消息需按飞书事件权限和机器人 @ 规则配置。
+
+飞书聊天默认复用同一个 Muse 会话。用户发送 `/new`、`新会话`、`开启新会话`、`开始新会话` 或 `重新开始` 后，会切换到新的会话，旧会话仍保留。
+
 ### 启动
 
 分别启动三个服务：

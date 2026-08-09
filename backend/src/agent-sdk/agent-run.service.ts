@@ -17,6 +17,13 @@ export interface AgentRunSubscriber {
   send(event: string, data: unknown): boolean;
 }
 
+export interface AgentRunResult {
+  conversationId: string;
+  status: 'completed' | 'error' | 'stopped';
+  content: string;
+  errorMessage?: string;
+}
+
 interface NormalizedMessage {
   id?: string;
   role: 'user' | 'assistant';
@@ -144,6 +151,36 @@ export class AgentRunService {
     this.sendSnapshot(run, subscriber);
     void this.execute(run);
     return run.donePromise;
+  }
+
+  /**
+   * Integration-facing runner for side channels such as Feishu.
+   * The web UI uses the SSE endpoint; adapters use this method and do not
+   * need to know about the internal event stream or subscriber lifecycle.
+   */
+  async runToCompletion(params: {
+    prompt?: string;
+    conversationId?: string;
+    resumeSessionId?: string;
+    agentId?: string;
+  }): Promise<AgentRunResult> {
+    let conversationId = params.conversationId;
+    const done = await this.startOrAttach(params, {
+      send: (event, data) => {
+        if (!conversationId && (event === 'snapshot' || event === 'meta')) {
+          conversationId = (data as any)?.conversationId || conversationId;
+        }
+        return true;
+      },
+    });
+    await done;
+    if (!conversationId) throw new Error('Agent did not create a conversation');
+    const conversation = await this.conversation.findOne(conversationId);
+    return {
+      conversationId,
+      status: conversation.runStatus === 'completed' ? 'completed' : conversation.runStatus === 'error' ? 'error' : 'stopped',
+      content: conversation.messages?.find((message) => message.role === 'assistant' && message.id === conversation.messages?.[conversation.messages.length - 1]?.id)?.content || '',
+    };
   }
 
   async status(conversationId: string): Promise<{

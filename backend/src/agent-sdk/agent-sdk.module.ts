@@ -15,6 +15,6 @@ import { MuseEventNormalizer } from '../events/muse-event.normalizer';
   imports: [ConversationModule, PlatformModule, AgentModule, RealtimeModule, PreviewModule],
   controllers: [AgentSdkController, AskUserController],
   providers: [SandboxServiceClient, AgentRunService, AskUserService, MuseEventNormalizer],
-  exports: [AskUserService],
+  exports: [AskUserService, AgentRunService],
 })
 export class AgentSdkModule {}

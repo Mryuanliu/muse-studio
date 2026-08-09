@@ -11,6 +11,7 @@ import { RealtimeModule } from './realtime/realtime.module';
 import { PreviewModule } from './preview/preview.module';
 import { WorkspaceModule } from './workspace/workspace.module';
 import { AgentModule } from './agent/agent.module';
+import { FeishuModule } from './feishu/feishu.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { AgentModule } from './agent/agent.module';
     PreviewModule,
     WorkspaceModule,
     AgentModule,
+    FeishuModule,
   ],
   controllers: [OutputController],
 })
