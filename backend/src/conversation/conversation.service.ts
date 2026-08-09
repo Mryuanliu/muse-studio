@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
 
@@ -18,7 +18,7 @@ export class ConversationService {
   /** Create a new conversation with the first user message. */
   async create(firstMessage: string, attachments?: any[], agentSnapshot?: any): Promise<Conversation> {
     const conv = this.convRepo.create({
-      title: firstMessage.slice(0, 50) || '新对话',
+      title: this.titleFromMessage(firstMessage) || '新对话',
       agentId: agentSnapshot?.agentId,
       agentName: agentSnapshot?.agentName,
       agentType: agentSnapshot?.agentType,
@@ -62,8 +62,32 @@ export class ConversationService {
 
   /** List all conversations (without full messages). */
   async findAll(): Promise<Conversation[]> {
-    return this.convRepo.find({
+    const conversations = await this.convRepo.find({
       order: { updatedAt: 'DESC' },
+    });
+    const ids = conversations.map((conversation) => conversation.id);
+    if (!ids.length) return conversations;
+
+    const firstUserMessages = await this.msgRepo.find({
+      where: { conversationId: In(ids), role: 'user' },
+      order: { createdAt: 'ASC' },
+    });
+    const firstMessageByConversation = new Map<string, Message>();
+    for (const message of firstUserMessages) {
+      if (!firstMessageByConversation.has(message.conversationId)) {
+        firstMessageByConversation.set(message.conversationId, message);
+      }
+    }
+
+    // Draft conversations created before their first message still have the
+    // default title. Derive the list response from the first user message so
+    // existing tasks become useful without requiring a new run.
+    return conversations.map((conversation) => {
+      const firstMessage = firstMessageByConversation.get(conversation.id);
+      const title = this.titleFromMessage(firstMessage?.content);
+      return title && conversation.title === '新对话'
+        ? { ...conversation, title }
+        : conversation;
     });
   }
 
@@ -81,8 +105,20 @@ export class ConversationService {
       conversationId,
     });
     const saved = await this.msgRepo.save(msg);
+    if (role === 'user') {
+      const conversation = await this.convRepo.findOne({ where: { id: conversationId } });
+      const title = this.titleFromMessage(content);
+      if (conversation && title && conversation.title === '新对话') {
+        await this.convRepo.update(conversationId, { title });
+      }
+    }
     await this.convRepo.update(conversationId, { updatedAt: new Date() });
     return saved;
+  }
+
+  private titleFromMessage(content?: string): string {
+    const title = content?.trim();
+    return title ? title.slice(0, 50) : '';
   }
 
   /** Update an existing message (e.g., after streaming completes). */

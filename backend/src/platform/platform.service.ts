@@ -222,7 +222,7 @@ export class PlatformService {
   private validateMcpInput(sourceType: McpSourceType, input: any): void {
     if (sourceType === 'remote') {
       if (input.transport && input.transport !== 'http') throw new BadRequestException('远程 MCP 只支持 Streamable HTTP');
-      if (!input.url || !this.isSafeRemoteUrl(input.url)) throw new BadRequestException('远程 MCP URL 必须是安全的 HTTPS 地址');
+      if (!input.url || !this.isSafeRemoteUrl(input.url)) throw new BadRequestException('远程 MCP URL 必须是 HTTPS 地址；本地 MCP 可使用 HTTP 回环地址（localhost、127.0.0.0/8 或 ::1）');
       const headers = input.headers || {};
       if (typeof headers !== 'object' || Array.isArray(headers)) throw new BadRequestException('Headers 格式不正确');
     }
@@ -235,9 +235,19 @@ export class PlatformService {
   private isSafeRemoteUrl(raw: string): boolean {
     try {
       const url = new URL(raw);
-      if (url.protocol !== 'https:') return false;
       const host = url.hostname.toLowerCase();
-      if (host === 'localhost' || host.endsWith('.localhost') || host === '::1' || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) return false;
+      const isLoopbackHost = host === 'localhost'
+        || host.endsWith('.localhost')
+        || host === '::1'
+        || host === '[::1]'
+        || /^127\./.test(host);
+
+      // Local MCP servers commonly expose plain HTTP on loopback. Keep this
+      // exception narrow; non-loopback HTTP and private network addresses
+      // must still use HTTPS (and private HTTPS hosts remain disallowed).
+      if (url.protocol === 'http:') return isLoopbackHost;
+      if (url.protocol !== 'https:') return false;
+      if (isLoopbackHost || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) return false;
       return true;
     } catch { return false; }
   }
