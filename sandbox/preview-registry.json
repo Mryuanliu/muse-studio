@@ -1,5 +1,5 @@
 {
-  "lastPort": 4162,
+  "lastPort": 4165,
   "records": {
     "30cab88e-167b-4836-a216-82ee228bf8b1": {
       "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/30cab88e-167b-4836-a216-82ee228bf8b1",
@@ -31,20 +31,17 @@
       "taskId": "07bdd638-0c16-4391-989a-bd39fc933bd7"
     },
     "a7430036-72b8-43c9-82be-fbb738064664": {
-      "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/a7430036-72b8-43c9-82be-fbb738064664",
+      "projectPath": "/Users/apple/Desktop/muse-studio/sandbox/workspaces/a7430036-72b8-43c9-82be-fbb738064664",
       "command": "npx",
       "args": [
         "next",
         "dev",
         "--port",
-        "4161"
+        "4162"
       ],
-      "status": "running",
-      "updatedAt": 1786208318481,
-      "taskId": "a7430036-72b8-43c9-82be-fbb738064664",
-      "port": 4161,
-      "pid": 60730,
-      "url": "http://localhost:4161"
+      "status": "failed",
+      "updatedAt": 1786372579435,
+      "taskId": "a7430036-72b8-43c9-82be-fbb738064664"
     },
     "f7045aee-cb93-45c4-8fd2-668ff34d2767": {
       "projectPath": "/Users/apple/Desktop/muse-studio/sandbox/workspaces/f7045aee-cb93-45c4-8fd2-668ff34d2767",
@@ -61,6 +58,19 @@
       "port": 4162,
       "pid": 74481,
       "url": "http://localhost:4162"
+    },
+    "98bb53b3-1546-4b61-957e-cbb48d93f8f6": {
+      "projectPath": "/Users/apple/Desktop/muse-studio/sandbox/workspaces/98bb53b3-1546-4b61-957e-cbb48d93f8f6",
+      "command": "npx",
+      "args": [
+        "next",
+        "dev",
+        "--port",
+        "4165"
+      ],
+      "status": "failed",
+      "updatedAt": 1786372712233,
+      "taskId": "98bb53b3-1546-4b61-957e-cbb48d93f8f6"
     }
   }
 }

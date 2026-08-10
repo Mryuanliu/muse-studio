@@ -194,13 +194,30 @@ export class FeishuService {
     const response = await this.client.im.v1.message.reply({
       path: { message_id: messageId },
       data: {
-        content: JSON.stringify({ text: text.slice(0, 150 * 1024) }),
-        msg_type: 'text',
+        content: JSON.stringify({
+          config: { wide_screen_mode: true },
+          elements: [{
+            tag: 'markdown',
+            content: this.limitCardContent(text),
+          }],
+        }),
+        msg_type: 'interactive',
       },
     });
     if (response.code && response.code !== 0) {
       throw new Error(`Feishu API ${response.code}: ${response.msg || 'request failed'}`);
     }
+  }
+
+  private limitCardContent(text: string): string {
+    const suffix = '\n\n内容过长，后续部分已省略。';
+    const maxBytes = 28 * 1024;
+    if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+    let result = text;
+    while (Buffer.byteLength(`${result}${suffix}`, 'utf8') > maxBytes && result.length > 0) {
+      result = result.slice(0, Math.max(1, result.length - 512));
+    }
+    return `${result}${suffix}`;
   }
 
   private logFeishuError(action: string, error: any, messageId: string): void {
