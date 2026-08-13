@@ -1,5 +1,5 @@
 {
-  "lastPort": 4165,
+  "lastPort": 4113,
   "records": {
     "30cab88e-167b-4836-a216-82ee228bf8b1": {
       "projectPath": "/Users/apple/Desktop/claude-code-sdk/h5-platform/sandbox/workspaces/30cab88e-167b-4836-a216-82ee228bf8b1",
@@ -61,16 +61,76 @@
     },
     "98bb53b3-1546-4b61-957e-cbb48d93f8f6": {
       "projectPath": "/Users/apple/Desktop/muse-studio/sandbox/workspaces/98bb53b3-1546-4b61-957e-cbb48d93f8f6",
-      "command": "npx",
+      "command": "npm",
       "args": [
-        "next",
+        "run",
         "dev",
+        "--",
         "--port",
-        "4165"
+        "4194"
+      ],
+      "status": "running",
+      "updatedAt": 1786376147647,
+      "taskId": "98bb53b3-1546-4b61-957e-cbb48d93f8f6",
+      "port": 4194,
+      "pid": 99386,
+      "url": "http://localhost:4194"
+    },
+    "57e87b31-5def-447d-87e2-26a40519c7d0": {
+      "projectPath": "/Users/apple/Desktop/muse-studio/sandbox/workspaces/57e87b31-5def-447d-87e2-26a40519c7d0",
+      "command": "npm",
+      "args": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "4195"
+      ],
+      "status": "running",
+      "updatedAt": 1786375403029,
+      "taskId": "57e87b31-5def-447d-87e2-26a40519c7d0",
+      "port": 4195,
+      "pid": 98386,
+      "url": "http://localhost:4195"
+    },
+    "5989e71c-8334-43ef-9703-dc6bd6d57be6": {
+      "projectPath": "/Users/apple/Desktop/muse-studio/sandbox/workspaces/5989e71c-8334-43ef-9703-dc6bd6d57be6",
+      "command": "npm",
+      "args": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "4100"
       ],
       "status": "failed",
-      "updatedAt": 1786372712233,
-      "taskId": "98bb53b3-1546-4b61-957e-cbb48d93f8f6"
+      "updatedAt": 1786376763172,
+      "taskId": "5989e71c-8334-43ef-9703-dc6bd6d57be6"
+    },
+    "114df7e8-ede5-4499-b6b3-7331dc77bdcc": {
+      "projectPath": "/Users/apple/Desktop/muse-studio/sandbox/workspaces/114df7e8-ede5-4499-b6b3-7331dc77bdcc",
+      "command": "external",
+      "args": [],
+      "status": "running",
+      "updatedAt": 1786377330864,
+      "taskId": "114df7e8-ede5-4499-b6b3-7331dc77bdcc",
+      "port": 4104,
+      "pid": 3231,
+      "url": "http://localhost:4104"
+    },
+    "93331dbd-b63b-4d33-8dae-ab2ed17d5769": {
+      "projectPath": "/Users/apple/Desktop/muse-studio/sandbox/workspaces/93331dbd-b63b-4d33-8dae-ab2ed17d5769",
+      "command": "npm",
+      "args": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "4113"
+      ],
+      "status": "failed",
+      "updatedAt": 1786636061574,
+      "taskId": "93331dbd-b63b-4d33-8dae-ab2ed17d5769"
     }
   }
 }

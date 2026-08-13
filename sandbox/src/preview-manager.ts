@@ -26,6 +26,7 @@ interface PreviewEntry {
   project: string;
   child: ChildProcessWithoutNullStreams;
   output: string;
+  owned: boolean;
 }
 
 function defaultRegistryFile(): string {
@@ -80,6 +81,33 @@ function isAddressInUse(output: string): boolean {
   return /EADDRINUSE|address already in use/i.test(output);
 }
 
+interface ExistingNextServer {
+  port: number;
+  pid: number;
+  project?: string;
+}
+
+function parseExistingNextServer(output: string): ExistingNextServer | undefined {
+  const marker = output.search(/Another next dev server is already running/i);
+  if (marker < 0) return undefined;
+  const existingOutput = output.slice(marker);
+  const port = existingOutput.match(/Local:\s+http:\/\/localhost:(\d+)/i)?.[1];
+  const pid = existingOutput.match(/PID:\s+(\d+)/i)?.[1];
+  const project = existingOutput.match(/Dir:\s+(.+)/i)?.[1]?.trim();
+  if (!port || !pid) return undefined;
+  return { port: Number(port), pid: Number(pid), project };
+}
+
+function isProcessAlive(pid?: number): boolean {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function waitHealthy(url: string, timeoutMs = 15000): Promise<{ ok: boolean; status: number }> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -130,13 +158,25 @@ export class PreviewManager {
 
     const registry = readRegistry(this.registryFile);
     const record = registry.records[key];
-    const preferredPort = requestedPort || record?.port;
-    let resolvedCommand = command;
-    let resolvedArgs = args;
-    if (command === 'npm' && args[0] === 'run' && args[1] === 'dev') {
-      resolvedCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-      resolvedArgs = ['next', 'dev', ...args.slice(2)];
+    if (record?.status === 'running' && record.port && isProcessAlive(record.pid)) {
+      const health = await waitHealthy(`http://localhost:${record.port}`, 2000);
+      if (health.ok) {
+        this.running.set(key, {
+          pid: record.pid!,
+          port: record.port,
+          project,
+          child: undefined as unknown as ChildProcessWithoutNullStreams,
+          output: '',
+          owned: false,
+        });
+        return this.toResult(this.running.get(key)!);
+      }
     }
+    const preferredPort = requestedPort || record?.port;
+    // Keep the project's own dev script. Projects may use Vite, Next, or
+    // another server, and replacing `npm run dev` with Next breaks them.
+    const resolvedCommand = command;
+    const resolvedArgs = args;
     let nextRequestedPort = preferredPort;
     let lastOutput = '';
     for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -170,7 +210,7 @@ export class PreviewManager {
         this.updateRecord(key, { status: 'stopped', port: undefined, pid: undefined, url: undefined });
       });
 
-      this.running.set(key, { pid: child.pid ?? 0, port: finalPort, project, child, output });
+      this.running.set(key, { pid: child.pid ?? 0, port: finalPort, project, child, output, owned: true });
       this.updateRecord(key, {
         taskId,
         projectPath: project,
@@ -197,11 +237,41 @@ export class PreviewManager {
         };
       }
 
+      const existingNext = parseExistingNextServer(output);
+      if (existingNext
+        && (!existingNext.project || path.resolve(existingNext.project) === project)
+        && isProcessAlive(existingNext.pid)) {
+        const existingHealth = await waitHealthy(`http://localhost:${existingNext.port}`, 2000);
+        if (existingHealth.ok) {
+          this.running.delete(key);
+          if (child.exitCode === null) child.kill('SIGTERM');
+          this.updateRecord(key, {
+            taskId,
+            projectPath: project,
+            command: 'external',
+            args: [],
+            port: existingNext.port,
+            pid: existingNext.pid,
+            status: 'running',
+            url: `http://localhost:${existingNext.port}`,
+          });
+          this.running.set(key, {
+            pid: existingNext.pid,
+            port: existingNext.port,
+            project,
+            child: undefined as unknown as ChildProcessWithoutNullStreams,
+            output: output.slice(-20000),
+            owned: false,
+          });
+          return this.toResult(this.running.get(key)!);
+        }
+      }
+
       this.running.delete(key);
       if (child.exitCode === null) child.kill('SIGTERM');
       if (!isAddressInUse(output)) {
         this.updateRecord(key, { status: 'failed', port: undefined, pid: undefined, url: undefined });
-        throw new Error(`Dev server failed to become healthy:\n${output}`);
+        throw new Error(`Dev server failed to become healthy (HTTP ${health.status || 'no response'}):\n${output}`);
       }
       // A process can claim the port between the probe and spawn. Retry with
       // the next free port instead of exposing the transient EADDRINUSE.
@@ -219,14 +289,16 @@ export class PreviewManager {
     if (!record) {
       throw new Error(`Preview record not found: ${key}`);
     }
-    return this.start(record.projectPath, record.command, record.args, undefined, record.taskId || key);
+    const command = record.command === 'external' ? 'npm' : record.command;
+    const args = record.command === 'external' ? ['run', 'dev'] : record.args;
+    return this.start(record.projectPath, command, args, undefined, record.taskId || key);
   }
 
   async stop(taskIdOrProject: string): Promise<{ stopped: boolean; pid?: number; port?: number }> {
     const key = taskIdOrProject;
     const entry = this.running.get(key);
     if (!entry) return { stopped: false };
-    entry.child.kill('SIGTERM');
+    if (entry.owned) entry.child.kill('SIGTERM');
     this.running.delete(key);
     this.updateRecord(key, { status: 'stopped', port: undefined, pid: undefined, url: undefined });
     return { stopped: true, pid: entry.pid, port: entry.port };

@@ -181,6 +181,14 @@ function proxyPreview(
   const headers = { ...req.headers };
   headers.host = target.host;
   headers['accept-encoding'] = 'identity';
+  const previewPrefix = `/preview/${encodeURIComponent(taskId)}`;
+
+  const rewriteRootPaths = (body: string): string => {
+    // Vite emits root-relative references such as /@vite/client and
+    // /src/main.jsx. Keep those requests under the task preview route.
+    const rootPath = /(^|[\s"'=(])\/(?![\/]|preview\/)/g;
+    return body.replace(rootPath, `$1${previewPrefix}/`);
+  };
 
   const proxyReq = http.request(
     {
@@ -220,7 +228,7 @@ function proxyPreview(
                 /(["'(=])\/_next\//g,
                 `$1/preview/${encodeURIComponent(taskId)}/_next/`,
               );
-          res.end(rewritten);
+          res.end(rewriteRootPaths(rewritten));
         });
       } else {
         proxyRes.pipe(res);

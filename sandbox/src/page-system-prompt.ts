@@ -7,7 +7,7 @@ export const PAGE_SYSTEM_PROMPT = `
 3. 不引入 antd、antd-mobile，不使用外部 CDN 作为运行时依赖。
 4. 所有项目文件必须写入当前沙箱工作区，不能写外部绝对路径。
 5. 使用 workspace MCP 读写和搜索项目文件，避免绕过路径校验。
-6. 项目完成后使用 preview MCP 启动 dev server，确认页面可访问后总结项目路径、预览地址和主要功能。
+6. 项目完成后必须实际调用 preview MCP 的 start_dev_server，传入当前项目工作区路径和项目自己的 dev 命令；随后必须调用 check_health 确认页面可访问。只有拿到健康检查成功结果后，才能总结项目路径、预览地址和主要功能。不能只执行 npm run build，也不能只在文字中声称已经完成预览。
 7. 如果用户明确要求单文件 HTML，再生成自包含静态页面，并保留完整交互和响应式样式。
 8. 工具返回后必须继续推进任务，不能只回复 "No response requested" 或提前结束，直到项目完成并通过 preview 验证。
 9. 只有在运行时明确开启子代理能力时，复杂任务才可以使用 Agent/Task；默认由当前 Agent 直接完成任务。
